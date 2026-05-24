@@ -1,0 +1,82 @@
+name: Upstream Sync
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Mondays 02:37 KST (Sundays 17:37 UTC).
+    - cron: "37 17 * * 0"
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync mGBA upstream
+    runs-on: ubuntu-24.04
+    env:
+      UPSTREAM_URL: https://github.com/mgba-emu/mgba.git
+      UPSTREAM_BRANCH: master
+      SYNC_BRANCH: upstream-sync/mgba-master
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Merge upstream
+        id: merge
+        env:
+          BASE_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          git remote add upstream "${UPSTREAM_URL}"
+          git fetch upstream "${UPSTREAM_BRANCH}"
+          git fetch origin "${BASE_BRANCH}"
+          git checkout -B "${SYNC_BRANCH}" "origin/${BASE_BRANCH}"
+          git merge --no-edit --no-ff "upstream/${UPSTREAM_BRANCH}"
+
+          ahead="$(git rev-list --count "origin/${BASE_BRANCH}..HEAD")"
+          if [ "${ahead}" = "0" ]; then
+            echo "has_changes=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "has_changes=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Push sync branch
+        if: steps.merge.outputs.has_changes == 'true'
+        run: git push --force-with-lease origin "${SYNC_BRANCH}"
+
+      - name: Open pull request
+        if: steps.merge.outputs.has_changes == 'true'
+        env:
+          BASE_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > pr-body.md <<'BODY'
+          Weekly upstream sync from `mgba-emu/mgba`.
+
+          This PR is generated automatically. If the merge succeeds, the build workflow is dispatched for the sync branch so Linux, Windows, and both macOS artifacts can be checked before merging.
+          BODY
+
+          existing_pr="$(gh pr list --head "${SYNC_BRANCH}" --state open --json number --jq '.[0].number // ""')"
+          if [ -n "${existing_pr}" ]; then
+            gh pr edit "${existing_pr}" --title "Sync upstream mGBA" --body-file pr-body.md
+          else
+            gh pr create --base "${BASE_BRANCH}" --head "${SYNC_BRANCH}" --title "Sync upstream mGBA" --body-file pr-body.md
+          fi
+
+      - name: Run build workflow
+        if: steps.merge.outputs.has_changes == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run build.yml --ref "${SYNC_BRANCH}"

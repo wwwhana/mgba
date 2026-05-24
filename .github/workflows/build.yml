@@ -1,0 +1,165 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CMAKE_BUILD_TYPE: Release
+  COMMON_CMAKE_FLAGS: >-
+    -DBUILD_QT=ON
+    -DBUILD_SDL=OFF
+    -DBUILD_FLASHGBX=ON
+    -DBUILD_FLASHGBX_STANDALONE=ON
+    -DFORCE_QT_VERSION=6
+    -DENABLE_DEBUGGERS=OFF
+    -DENABLE_SCRIPTING=OFF
+    -DUSE_EDITLINE=OFF
+    -DUSE_ELF=OFF
+    -DUSE_FFMPEG=OFF
+    -DUSE_LIBZIP=OFF
+    -DUSE_LUA=OFF
+    -DUSE_MINIZIP=OFF
+    -DUSE_SQLITE3=OFF
+
+jobs:
+  linux:
+    name: Linux
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            libgl1-mesa-dev \
+            libqt6opengl6-dev \
+            ninja-build \
+            pkg-config \
+            qt6-base-dev \
+            qt6-multimedia-dev
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} ${COMMON_CMAKE_FLAGS}
+      - name: Build
+        run: cmake --build build --target mgba-qt --parallel
+      - name: Install artifact
+        run: cmake --install build --prefix package
+      - name: Pack artifact
+        run: cmake -E tar cf mGBA-linux.tar.gz --format=gnutar -- package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mGBA-linux
+          path: mGBA-linux.tar.gz
+
+  macos:
+    name: macOS (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+            artifact: mGBA-macos-arm64.zip
+          - arch: x86_64
+            runner: macos-15-intel
+            artifact: mGBA-macos-x86_64.zip
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: brew install cmake ninja qt qtmultimedia
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} \
+            -DCMAKE_PREFIX_PATH="$(brew --prefix qt);$(brew --prefix qtmultimedia)" \
+            ${COMMON_CMAKE_FLAGS}
+      - name: Build
+        run: cmake --build build --target mgba-qt --parallel
+      - name: Stage artifact
+        run: |
+          mkdir -p package
+          cp -R build/qt/mGBA.app package/
+      - name: Pack artifact
+        run: ditto -c -k --keepParent package/mGBA.app "${{ matrix.artifact }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mGBA-macos-${{ matrix.arch }}
+          path: ${{ matrix.artifact }}
+
+  windows:
+    name: Windows
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-qt6-base
+            mingw-w64-ucrt-x86_64-qt6-multimedia
+      - name: Configure
+        run: |
+          FLASHGBX_PYTHON="$(cygpath -m "$pythonLocation/python.exe")"
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} \
+            -DFLASHGBX_PYTHON="${FLASHGBX_PYTHON}" \
+            ${COMMON_CMAKE_FLAGS}
+      - name: Build
+        run: cmake --build build --target mgba-qt --parallel
+      - name: Install artifact
+        run: cmake --install build --prefix package
+      - name: Pack artifact
+        run: cmake -E tar cf mGBA-windows.zip --format=zip -- package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mGBA-windows
+          path: mGBA-windows.zip
+
+  release:
+    name: Release
+    runs-on: ubuntu-24.04
+    needs:
+      - linux
+      - macos
+      - windows
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release-artifacts/*

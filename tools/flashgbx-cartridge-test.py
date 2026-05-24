@@ -72,17 +72,46 @@ def infer_port():
     return (cu_ports or ports)[0]
 
 
+def cli_names():
+    names = ["flashgbx-cli"]
+    if os.name == "nt":
+        names.insert(0, "flashgbx-cli.exe")
+    return names
+
+
+def cli_candidates(app):
+    if app:
+        app = Path(app)
+        roots = [
+            app / "Contents/Resources",
+            app,
+            app.parent,
+        ]
+    else:
+        roots = [
+            Path("dist/mgba-macos/Applications/mGBA.app/Contents/Resources"),
+            Path("build/qt"),
+            Path("build/install"),
+            Path("package"),
+            Path("."),
+        ]
+    candidates = []
+    for root in roots:
+        for name in cli_names():
+            candidates.append(root / "FlashGBX/flashgbx-cli" / name)
+    return candidates
+
+
 def resolve_cli(args):
     if args.cli:
-        cli = Path(args.cli)
+        candidates = [Path(args.cli)]
     else:
-        app = Path(args.app)
-        cli = app / "Contents/Resources/FlashGBX/flashgbx-cli/flashgbx-cli"
-    if not cli.exists():
-        raise SystemExit("Bundled flashgbx-cli was not found: {}".format(cli))
-    if not os.access(str(cli), os.X_OK):
-        raise SystemExit("Bundled flashgbx-cli is not executable: {}".format(cli))
-    return cli
+        candidates = cli_candidates(args.app)
+    for cli in candidates:
+        if cli.exists() and os.access(str(cli), os.X_OK):
+            return cli
+    raise SystemExit("Bundled flashgbx-cli was not found. Checked: {}".format(
+        ", ".join(str(candidate) for candidate in candidates)))
 
 
 def flashgbx_options(args, mode):
@@ -380,7 +409,7 @@ def build_summary(args, cli, outdir):
 
 def parse_args(argv):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--app", default="dist/mgba-macos/Applications/mGBA.app", help="mGBA.app containing the bundled FlashGBX CLI")
+    parser.add_argument("--app", default=os.environ.get("MGBA_APP"), help="mGBA app, install prefix, or artifact directory containing FlashGBX")
     parser.add_argument("--cli", help="flashgbx-cli path; overrides --app")
     parser.add_argument("--port", default=os.environ.get("FLASHGBX_PORT"), help="serial device path, e.g. /dev/cu.usbserial-210")
     parser.add_argument("--mode", choices=("auto", "dmg", "agb"), default=os.environ.get("FLASHGBX_MODE", "auto"))

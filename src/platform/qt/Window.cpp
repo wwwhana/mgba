@@ -446,11 +446,29 @@ bool cartridgeRomLooksValid(const QString& path, const QString& mode, QString* r
 }
 
 QString appResourcesPath() {
+	QStringList candidates;
 	QDir dir(QCoreApplication::applicationDirPath());
 	if (dir.dirName() == QLatin1String("MacOS") && dir.cdUp() && dir.dirName() == QLatin1String("Contents") && dir.cd(QStringLiteral("Resources"))) {
-		return dir.absolutePath();
+		candidates.append(dir.absolutePath());
 	}
-	return QCoreApplication::applicationDirPath();
+	candidates.append(GBAApp::dataDir());
+	candidates.append(QCoreApplication::applicationDirPath());
+
+	QStringList seen;
+	for (const QString& candidate : candidates) {
+		if (candidate.isEmpty()) {
+			continue;
+		}
+		const QString cleanPath = QDir::cleanPath(candidate);
+		if (seen.contains(cleanPath)) {
+			continue;
+		}
+		seen.append(cleanPath);
+		if (QFileInfo::exists(QDir(cleanPath).filePath(QStringLiteral("FlashGBX")))) {
+			return cleanPath;
+		}
+	}
+	return seen.isEmpty() ? QCoreApplication::applicationDirPath() : seen.first();
 }
 
 QStringList executableSearchPaths() {
@@ -523,10 +541,21 @@ QStringList flashGBXDevicePorts() {
 		}
 	}
 #else
-	QDir devDir(QStringLiteral("/dev"));
-	for (const QString& entry : devDir.entryList(QStringList{QStringLiteral("cu.*"), QStringLiteral("tty.*")}, QDir::System | QDir::Files, QDir::Name)) {
-		ports.append(QStringLiteral("/dev/") + entry);
-	}
+	auto appendDeviceEntries = [&ports](const QString& path, const QStringList& patterns) {
+		QDir devDir(path);
+		for (const QString& entry : devDir.entryList(patterns, QDir::System | QDir::Files | QDir::NoDotAndDotDot, QDir::Name)) {
+			ports.append(devDir.absoluteFilePath(entry));
+		}
+	};
+	appendDeviceEntries(QStringLiteral("/dev"), QStringList{
+		QStringLiteral("cu.*"),
+		QStringLiteral("tty.*"),
+		QStringLiteral("ttyACM*"),
+		QStringLiteral("ttyUSB*"),
+		QStringLiteral("ttyS*"),
+	});
+	appendDeviceEntries(QStringLiteral("/dev/serial/by-id"), QStringList{QStringLiteral("*")});
+	appendDeviceEntries(QStringLiteral("/dev/serial/by-path"), QStringList{QStringLiteral("*")});
 #endif
 	ports.removeDuplicates();
 	ports.sort();

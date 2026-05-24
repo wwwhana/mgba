@@ -386,16 +386,54 @@ if(ENABLE_SCRIPTING AND USE_LUA)
 	install(DIRECTORY ${PROJECT_SOURCE_DIR}/res/scripts DESTINATION ${DATADIR} COMPONENT ${BINARY_NAME}-qt)
 endif()
 install(FILES ${PROJECT_SOURCE_DIR}/res/nointro.dat DESTINATION ${DATADIR} COMPONENT ${BINARY_NAME}-qt)
+set(BUILD_FLASHGBX_DEFAULT OFF)
+if(APPLE OR WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
+	set(BUILD_FLASHGBX_DEFAULT ON)
+endif()
+option(BUILD_FLASHGBX "Embed FlashGBX cartridge reader support" ${BUILD_FLASHGBX_DEFAULT})
+option(BUILD_FLASHGBX_STANDALONE "Build and embed a standalone FlashGBX CLI runtime" ${BUILD_FLASHGBX_DEFAULT})
+set(FLASHGBX_PYTHON "" CACHE FILEPATH "Python interpreter for building the standalone FlashGBX CLI")
 set(FLASHGBX_SUBMODULE_DIR "${PROJECT_SOURCE_DIR}/extern/FlashGBX")
 set(FLASHGBX_SITE_PACKAGES_DIR "${CMAKE_BINARY_DIR}/flashgbx-site-packages" CACHE PATH "Bundled Python site-packages for embedded FlashGBX")
 set(FLASHGBX_STANDALONE_DIR "${CMAKE_BINARY_DIR}/flashgbx-standalone/flashgbx-cli" CACHE PATH "Standalone FlashGBX CLI bundle with embedded Python runtime")
 set(FLASHGBX_STANDALONE_EXECUTABLE "")
-if(EXISTS "${FLASHGBX_STANDALONE_DIR}/flashgbx-cli")
-	set(FLASHGBX_STANDALONE_EXECUTABLE "${FLASHGBX_STANDALONE_DIR}/flashgbx-cli")
-elseif(EXISTS "${FLASHGBX_STANDALONE_DIR}/flashgbx-cli.exe")
+if(WIN32)
 	set(FLASHGBX_STANDALONE_EXECUTABLE "${FLASHGBX_STANDALONE_DIR}/flashgbx-cli.exe")
+else()
+	set(FLASHGBX_STANDALONE_EXECUTABLE "${FLASHGBX_STANDALONE_DIR}/flashgbx-cli")
 endif()
-if(EXISTS "${FLASHGBX_SUBMODULE_DIR}/FlashGBX/FlashGBX.py")
+if(BUILD_FLASHGBX AND NOT EXISTS "${FLASHGBX_SUBMODULE_DIR}/FlashGBX/FlashGBX.py")
+	message(FATAL_ERROR "BUILD_FLASHGBX is ON, but extern/FlashGBX is missing. Initialize submodules or configure with -DBUILD_FLASHGBX=OFF.")
+endif()
+if(BUILD_FLASHGBX AND BUILD_FLASHGBX_STANDALONE)
+	if(NOT FLASHGBX_PYTHON)
+		if(WIN32)
+			set(FLASHGBX_PYTHON_VENV "${CMAKE_BINARY_DIR}/flashgbx-build-venv/Scripts/python.exe")
+		else()
+			set(FLASHGBX_PYTHON_VENV "${CMAKE_BINARY_DIR}/flashgbx-build-venv/bin/python")
+		endif()
+		if(EXISTS "${FLASHGBX_PYTHON_VENV}")
+			set(FLASHGBX_PYTHON_DETECTED "${FLASHGBX_PYTHON_VENV}")
+		else()
+			find_program(FLASHGBX_PYTHON_DETECTED NAMES python3 python)
+		endif()
+		if(FLASHGBX_PYTHON_DETECTED)
+			set(FLASHGBX_PYTHON "${FLASHGBX_PYTHON_DETECTED}" CACHE FILEPATH "Python interpreter for building the standalone FlashGBX CLI" FORCE)
+		endif()
+	endif()
+	if(NOT FLASHGBX_PYTHON)
+		message(FATAL_ERROR "BUILD_FLASHGBX_STANDALONE is ON, but no Python interpreter was found. Install Python or configure with -DBUILD_FLASHGBX_STANDALONE=OFF.")
+	endif()
+	add_custom_command(OUTPUT "${FLASHGBX_STANDALONE_EXECUTABLE}"
+		COMMAND "${FLASHGBX_PYTHON}" "${PROJECT_SOURCE_DIR}/tools/build-flashgbx-standalone.py" --build-dir "${CMAKE_BINARY_DIR}" --python "${FLASHGBX_PYTHON}"
+		DEPENDS "${PROJECT_SOURCE_DIR}/tools/build-flashgbx-standalone.py" "${PROJECT_SOURCE_DIR}/tools/flashgbx-bundled-runner.py" "${FLASHGBX_SUBMODULE_DIR}/setup.py" "${FLASHGBX_SUBMODULE_DIR}/FlashGBX/FlashGBX.py"
+		WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+		COMMENT "Building standalone FlashGBX CLI runtime")
+	add_custom_target(flashgbx-standalone DEPENDS "${FLASHGBX_STANDALONE_EXECUTABLE}")
+elseif(NOT EXISTS "${FLASHGBX_STANDALONE_EXECUTABLE}")
+	set(FLASHGBX_STANDALONE_EXECUTABLE "")
+endif()
+if(BUILD_FLASHGBX)
 	install(DIRECTORY "${FLASHGBX_SUBMODULE_DIR}/FlashGBX" DESTINATION "${DATADIR}/FlashGBX" COMPONENT ${BINARY_NAME}-qt)
 	install(FILES "${FLASHGBX_SUBMODULE_DIR}/README.md" "${FLASHGBX_SUBMODULE_DIR}/LICENSE" DESTINATION "${DATADIR}/FlashGBX" COMPONENT ${BINARY_NAME}-qt)
 	install(PROGRAMS "${PROJECT_SOURCE_DIR}/tools/flashgbx-bundled-runner.py" DESTINATION "${DATADIR}/FlashGBX" COMPONENT ${BINARY_NAME}-qt)
@@ -403,7 +441,7 @@ if(EXISTS "${FLASHGBX_SUBMODULE_DIR}/FlashGBX/FlashGBX.py")
 		install(DIRECTORY "${FLASHGBX_SITE_PACKAGES_DIR}/" DESTINATION "${DATADIR}/FlashGBX/site-packages" COMPONENT ${BINARY_NAME}-qt)
 	endif()
 	if(FLASHGBX_STANDALONE_EXECUTABLE)
-		install(DIRECTORY "${FLASHGBX_STANDALONE_DIR}" DESTINATION "${DATADIR}/FlashGBX" COMPONENT ${BINARY_NAME}-qt)
+		install(DIRECTORY "${FLASHGBX_STANDALONE_DIR}" DESTINATION "${DATADIR}/FlashGBX" COMPONENT ${BINARY_NAME}-qt OPTIONAL)
 	endif()
 endif()
 if(NOT WIN32 AND NOT APPLE)
@@ -473,23 +511,31 @@ endif()
 
 add_executable(${BINARY_NAME}-qt WIN32 MACOSX_BUNDLE main.cpp ${PROJECT_SOURCE_DIR}/res/mgba.icns ${SOURCE_FILES} ${PLATFORM_SRC} ${UI_SRC} ${AUDIO_SRC} ${RESOURCES})
 set_target_properties(${BINARY_NAME}-qt PROPERTIES MACOSX_BUNDLE_INFO_PLIST ${PROJECT_SOURCE_DIR}/res/info.plist.in COMPILE_DEFINITIONS "${FEATURE_DEFINES};${FUNCTION_DEFINES};${OS_DEFINES};${QT_DEFINES}" COMPILE_OPTIONS "${FEATURE_FLAGS}")
-if(APPLE AND EXISTS "${FLASHGBX_SUBMODULE_DIR}/FlashGBX/FlashGBX.py")
+if(TARGET flashgbx-standalone)
+	add_dependencies(${BINARY_NAME}-qt flashgbx-standalone)
+endif()
+if(BUILD_FLASHGBX)
+	if(APPLE)
+		set(FLASHGBX_RUNTIME_DIR "$<TARGET_BUNDLE_CONTENT_DIR:${BINARY_NAME}-qt>/Resources/FlashGBX")
+	else()
+		set(FLASHGBX_RUNTIME_DIR "$<TARGET_FILE_DIR:${BINARY_NAME}-qt>/FlashGBX")
+	endif()
 	add_custom_command(TARGET ${BINARY_NAME}-qt POST_BUILD
-		COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_BUNDLE_CONTENT_DIR:${BINARY_NAME}-qt>/Resources/FlashGBX"
-		COMMAND "${CMAKE_COMMAND}" -E copy_directory "${FLASHGBX_SUBMODULE_DIR}/FlashGBX" "$<TARGET_BUNDLE_CONTENT_DIR:${BINARY_NAME}-qt>/Resources/FlashGBX/FlashGBX"
-		COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${FLASHGBX_SUBMODULE_DIR}/README.md" "$<TARGET_BUNDLE_CONTENT_DIR:${BINARY_NAME}-qt>/Resources/FlashGBX/README.md"
-		COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${FLASHGBX_SUBMODULE_DIR}/LICENSE" "$<TARGET_BUNDLE_CONTENT_DIR:${BINARY_NAME}-qt>/Resources/FlashGBX/LICENSE"
-		COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${PROJECT_SOURCE_DIR}/tools/flashgbx-bundled-runner.py" "$<TARGET_BUNDLE_CONTENT_DIR:${BINARY_NAME}-qt>/Resources/FlashGBX/flashgbx-bundled-runner.py"
-		COMMENT "Embedding cartridge reader into mGBA.app")
+		COMMAND "${CMAKE_COMMAND}" -E make_directory "${FLASHGBX_RUNTIME_DIR}"
+		COMMAND "${CMAKE_COMMAND}" -E copy_directory "${FLASHGBX_SUBMODULE_DIR}/FlashGBX" "${FLASHGBX_RUNTIME_DIR}/FlashGBX"
+		COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${FLASHGBX_SUBMODULE_DIR}/README.md" "${FLASHGBX_RUNTIME_DIR}/README.md"
+		COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${FLASHGBX_SUBMODULE_DIR}/LICENSE" "${FLASHGBX_RUNTIME_DIR}/LICENSE"
+		COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${PROJECT_SOURCE_DIR}/tools/flashgbx-bundled-runner.py" "${FLASHGBX_RUNTIME_DIR}/flashgbx-bundled-runner.py"
+		COMMENT "Embedding cartridge reader into ${BINARY_NAME}-qt")
 	if(EXISTS "${FLASHGBX_SITE_PACKAGES_DIR}")
 		add_custom_command(TARGET ${BINARY_NAME}-qt POST_BUILD
-			COMMAND "${CMAKE_COMMAND}" -E copy_directory "${FLASHGBX_SITE_PACKAGES_DIR}" "$<TARGET_BUNDLE_CONTENT_DIR:${BINARY_NAME}-qt>/Resources/FlashGBX/site-packages"
-			COMMENT "Embedding cartridge reader Python dependencies into mGBA.app")
+			COMMAND "${CMAKE_COMMAND}" -E copy_directory "${FLASHGBX_SITE_PACKAGES_DIR}" "${FLASHGBX_RUNTIME_DIR}/site-packages"
+			COMMENT "Embedding cartridge reader Python dependencies into ${BINARY_NAME}-qt")
 	endif()
 	if(FLASHGBX_STANDALONE_EXECUTABLE)
 		add_custom_command(TARGET ${BINARY_NAME}-qt POST_BUILD
-			COMMAND "${CMAKE_COMMAND}" -E copy_directory "${FLASHGBX_STANDALONE_DIR}" "$<TARGET_BUNDLE_CONTENT_DIR:${BINARY_NAME}-qt>/Resources/FlashGBX/flashgbx-cli"
-			COMMENT "Embedding standalone cartridge reader into mGBA.app")
+			COMMAND "${CMAKE_COMMAND}" -E copy_directory "${FLASHGBX_STANDALONE_DIR}" "${FLASHGBX_RUNTIME_DIR}/flashgbx-cli"
+			COMMENT "Embedding standalone cartridge reader into ${BINARY_NAME}-qt")
 	endif()
 endif()
 

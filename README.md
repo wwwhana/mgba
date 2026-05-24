@@ -266,6 +266,8 @@ tools/flashgbx-cartridge-test.py --port /dev/cu.usbserial-210 --mode dmg --dmg-s
 
 The default test is read-only. It records FlashGBX logs, reads cartridge info, backs up save data twice and compares hashes, backs up the ROM, validates the ROM header, and writes a `summary.json` under `dist/cartridge-test/`. Add `--write-save-verify` only when explicitly testing cartridge save restore/readback.
 
+FlashGBX cartridge reader support is controlled by CMake options. `BUILD_FLASHGBX` embeds the FlashGBX source/runner, and `BUILD_FLASHGBX_STANDALONE` builds an embedded standalone CLI runtime with PyInstaller. Both options default to enabled on Linux, Windows, and macOS in this repository; pass `-DBUILD_FLASHGBX=OFF` or `-DBUILD_FLASHGBX_STANDALONE=OFF` to disable them.
+
 Copyright
 ---------
 
