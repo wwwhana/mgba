@@ -527,7 +527,7 @@ Download size: %3</source>
     <message>
         <location filename="../CoreManager.cpp" line="95"/>
         <source>Could not load game. Are you sure it&apos;s in the correct format?</source>
-        <translation>게임을 로드할 수 없습니다. 올바른 형식인지 확인했나요?</translation>
+        <translation>롬을 로드하지 못했습니다. 올바른 형식인지 확인했나요?</translation>
     </message>
     <message>
         <location filename="../CoreManager.cpp" line="122"/>
@@ -6980,6 +6980,404 @@ OpenGL로 설정했는데도 이 문제가 계속 발생하면, 그래픽 카드
         <source>Autofire Left</source>
         <translation>연사 왼쪽</translation>
     </message>
+    <message>
+        <source>Cartridge operation in progress</source>
+        <translation>카트리지 작업 진행 중</translation>
+    </message>
+    <message>
+        <source>A cartridge operation is already running.</source>
+        <translation>카트리지 작업이 이미 실행 중입니다.</translation>
+    </message>
+    <message>
+        <source>Load Cartridge</source>
+        <translation>카트리지에서 불러오기</translation>
+    </message>
+    <message>
+        <source>GB/GBC</source>
+        <translation>GB/GBC</translation>
+    </message>
+    <message>
+        <source>GBA</source>
+        <translation>GBA</translation>
+    </message>
+    <message>
+        <source>Auto-detect</source>
+        <translation>자동 감지</translation>
+    </message>
+    <message>
+        <source>Detect</source>
+        <translation>감지</translation>
+    </message>
+    <message>
+        <source>Upload save changes to the cartridge automatically</source>
+        <translation>저장 데이터가 바뀌면 카트리지에 자동 업로드</translation>
+    </message>
+    <message>
+        <source>Upload even if the save hash did not change</source>
+        <translation>저장 해시가 같아도 업로드</translation>
+    </message>
+    <message>
+        <source>Cartridge type:</source>
+        <translation>카트리지 종류:</translation>
+    </message>
+    <message>
+        <source>Serial port:</source>
+        <translation>시리얼 포트:</translation>
+    </message>
+    <message>
+        <source>Cartridge profile:</source>
+        <translation>카트리지 프로필:</translation>
+    </message>
+    <message>
+        <source>Save type:</source>
+        <translation>저장 종류:</translation>
+    </message>
+    <message>
+        <source>GB/GBC memory controller:</source>
+        <translation>GB/GBC 메모리 컨트롤러:</translation>
+    </message>
+    <message>
+        <source>4K SRAM (512 Bytes)</source>
+        <translation>4K SRAM (512바이트)</translation>
+    </message>
+    <message>
+        <source>16K SRAM (2 KiB)</source>
+        <translation>16K SRAM (2 KiB)</translation>
+    </message>
+    <message>
+        <source>64K SRAM (8 KiB)</source>
+        <translation>64K SRAM (8 KiB)</translation>
+    </message>
+    <message>
+        <source>256K SRAM (32 KiB)</source>
+        <translation>256K SRAM (32 KiB)</translation>
+    </message>
+    <message>
+        <source>512K SRAM (64 KiB)</source>
+        <translation>512K SRAM (64 KiB)</translation>
+    </message>
+    <message>
+        <source>1M SRAM (128 KiB)</source>
+        <translation>1M SRAM (128 KiB)</translation>
+    </message>
+    <message>
+        <source>MBC6 SRAM+FLASH (1.03 MiB)</source>
+        <translation>MBC6 SRAM+FLASH (1.03 MiB)</translation>
+    </message>
+    <message>
+        <source>MBC7 2K EEPROM (256 Bytes)</source>
+        <translation>MBC7 2K EEPROM (256바이트)</translation>
+    </message>
+    <message>
+        <source>MBC7 4K EEPROM (512 Bytes)</source>
+        <translation>MBC7 4K EEPROM (512바이트)</translation>
+    </message>
+    <message>
+        <source>TAMA5 EEPROM (32 Bytes)</source>
+        <translation>TAMA5 EEPROM (32바이트)</translation>
+    </message>
+    <message>
+        <source>Unlicensed 4M SRAM (512 KiB)</source>
+        <translation>비공식 4M SRAM (512 KiB)</translation>
+    </message>
+    <message>
+        <source>Unlicensed 1M EEPROM (128 KiB)</source>
+        <translation>비공식 1M EEPROM (128 KiB)</translation>
+    </message>
+    <message>
+        <source>Unlicensed Photo! Directory (1 MiB)</source>
+        <translation>비공식 Photo! 디렉터리 (1 MiB)</translation>
+    </message>
+    <message>
+        <source>4K EEPROM (512 Bytes)</source>
+        <translation>4K EEPROM (512바이트)</translation>
+    </message>
+    <message>
+        <source>64K EEPROM (8 KiB)</source>
+        <translation>64K EEPROM (8 KiB)</translation>
+    </message>
+    <message>
+        <source>256K SRAM/FRAM (32 KiB)</source>
+        <translation>256K SRAM/FRAM (32 KiB)</translation>
+    </message>
+    <message>
+        <source>512K FLASH (64 KiB)</source>
+        <translation>512K FLASH (64 KiB)</translation>
+    </message>
+    <message>
+        <source>1M FLASH (128 KiB)</source>
+        <translation>1M FLASH (128 KiB)</translation>
+    </message>
+    <message>
+        <source>8M DACS (1 MiB)</source>
+        <translation>8M DACS (1 MiB)</translation>
+    </message>
+    <message>
+        <source>Unlicensed 512K SRAM (64 KiB)</source>
+        <translation>비공식 512K SRAM (64 KiB)</translation>
+    </message>
+    <message>
+        <source>Unlicensed 1M SRAM (128 KiB)</source>
+        <translation>비공식 1M SRAM (128 KiB)</translation>
+    </message>
+    <message>
+        <source>None</source>
+        <translation>없음</translation>
+    </message>
+    <message>
+        <source>MBC1</source>
+        <translation>MBC1</translation>
+    </message>
+    <message>
+        <source>MBC2</source>
+        <translation>MBC2</translation>
+    </message>
+    <message>
+        <source>MBC3 + RTC + SRAM + Battery</source>
+        <translation>MBC3 + RTC + SRAM + 배터리</translation>
+    </message>
+    <message>
+        <source>MBC3 + SRAM + Battery</source>
+        <translation>MBC3 + SRAM + 배터리</translation>
+    </message>
+    <message>
+        <source>MBC5</source>
+        <translation>MBC5</translation>
+    </message>
+    <message>
+        <source>MBC5 + SRAM + Battery</source>
+        <translation>MBC5 + SRAM + 배터리</translation>
+    </message>
+    <message>
+        <source>MBC5 + Rumble + SRAM + Battery</source>
+        <translation>MBC5 + 럼블 + SRAM + 배터리</translation>
+    </message>
+    <message>
+        <source>MBC6</source>
+        <translation>MBC6</translation>
+    </message>
+    <message>
+        <source>MBC7</source>
+        <translation>MBC7</translation>
+    </message>
+    <message>
+        <source>MBC30 + RTC + SRAM + Battery</source>
+        <translation>MBC30 + RTC + SRAM + 배터리</translation>
+    </message>
+    <message>
+        <source>MBC1M</source>
+        <translation>MBC1M</translation>
+    </message>
+    <message>
+        <source>HuC-1</source>
+        <translation>HuC-1</translation>
+    </message>
+    <message>
+        <source>HuC-3</source>
+        <translation>HuC-3</translation>
+    </message>
+    <message>
+        <source>TAMA5</source>
+        <translation>TAMA5</translation>
+    </message>
+    <message>
+        <source>The cartridge reader is bundled with mGBA. Port auto-detect leaves the serial port unset; cartridge profile auto-detect uses the reader&apos;s autodetect mode. If save detection is unstable, choose the cartridge&apos;s exact save type.</source>
+        <translation>카트리지 리더는 mGBA에 내장되어 있습니다. 포트 자동 감지는 시리얼 포트를 지정하지 않고, 카트리지 프로필 자동 감지는 리더의 자동 감지 모드를 사용합니다. 저장 감지가 불안정하면 카트리지의 정확한 저장 종류를 선택하십시오.</translation>
+    </message>
+    <message>
+        <source>RTC or save battery issue suspected.
+
+This cartridge appears to use a battery-backed RTC/save circuit, but the cartridge reader could not read stable RTC data or reported reset-looking RTC data. The game may report that no save exists, or new saves may not persist.%1
+
+Do you want to load the ROM anyway?</source>
+        <translation>RTC 또는 저장 배터리 문제가 의심됩니다.
+
+이 카트리지는 배터리로 유지되는 RTC/저장 회로를 사용하는 것으로 보이지만, 카트리지 리더가 안정적인 RTC 데이터를 읽지 못했거나 RTC가 리셋된 것처럼 보이는 데이터를 보고했습니다. 게임 안에서 저장이 없다고 나오거나, 새 저장이 유지되지 않을 수 있습니다.%1
+
+그래도 롬을 로드하시겠습니까?</translation>
+    </message>
+    <message>
+        <source>RTC or save battery issue suspected.
+
+This cartridge previously reported unstable RTC/save battery data. The game may report that no save exists, or new saves may not persist.
+
+Do you want to load the ROM anyway?</source>
+        <translation>RTC 또는 저장 배터리 문제가 의심됩니다.
+
+이 카트리지는 이전에 RTC/저장 배터리 데이터가 불안정하다고 보고되었습니다. 게임 안에서 저장이 없다고 나오거나, 새 저장이 유지되지 않을 수 있습니다.
+
+그래도 롬을 로드하시겠습니까?</translation>
+    </message>
+    <message>
+        <source>
+
+Reader status: %1</source>
+        <translation>
+
+리더 상태: %1</translation>
+    </message>
+    <message>
+        <source>Load Anyway</source>
+        <translation>그래도 로드</translation>
+    </message>
+    <message>
+        <source>Cartridge load canceled.</source>
+        <translation>카트리지 로드를 취소했습니다.</translation>
+    </message>
+    <message>
+        <source> - Saving to Cartridge</source>
+        <translation> - 카트리지에 저장 중</translation>
+    </message>
+    <message>
+        <source>Cartridge reader missing</source>
+        <translation>카트리지 리더 없음</translation>
+    </message>
+    <message>
+        <source>The embedded cartridge reader could not be found.</source>
+        <translation>내장 카트리지 리더를 찾을 수 없습니다.</translation>
+    </message>
+    <message>
+        <source>Reading cartridge...</source>
+        <translation>카트리지 읽는 중...</translation>
+    </message>
+    <message>
+        <source>Cartridge read failed</source>
+        <translation>카트리지 읽기 실패</translation>
+    </message>
+    <message>
+        <source>Cartridge read failed.</source>
+        <translation>카트리지 읽기에 실패했습니다.</translation>
+    </message>
+    <message>
+        <source>Could not back up the cartridge save data. The ROM was not loaded to avoid starting without the cartridge save.</source>
+        <translation>카트리지 저장 데이터를 백업하지 못했습니다. 카트리지 저장 데이터 없이 시작하지 않도록 롬을 로드하지 않았습니다.</translation>
+    </message>
+    <message>
+        <source>Cartridge save data could not be read. The ROM was not loaded.</source>
+        <translation>카트리지 저장 데이터를 읽을 수 없습니다. 롬을 로드하지 않았습니다.</translation>
+    </message>
+    <message>
+        <source>Initial save SHA-256: %1
+Verified save SHA-256: %2</source>
+        <translation>처음 읽은 저장 SHA-256: %1
+검증용 저장 SHA-256: %2</translation>
+    </message>
+    <message>
+        <source>Cartridge save data could not be verified. The ROM was not loaded.</source>
+        <translation>카트리지 저장 데이터를 검증하지 못했습니다. 롬을 로드하지 않았습니다.</translation>
+    </message>
+    <message>
+        <source>Could not preserve the verified cartridge save backup. The ROM was not loaded.</source>
+        <translation>검증된 카트리지 저장 백업을 보존하지 못했습니다. 롬을 로드하지 않았습니다.</translation>
+    </message>
+    <message>
+        <source>Cartridge save data could not be loaded into the emulator. The ROM was not started.</source>
+        <translation>카트리지 저장 데이터를 에뮬레이터에 로드하지 못했습니다. 롬을 시작하지 않았습니다.</translation>
+    </message>
+    <message>
+        <source>Cartridge loaded</source>
+        <translation>카트리지 불러옴</translation>
+    </message>
+    <message>
+        <source>ROM was loaded, but cartridge save data was not safely backed up. Save upload is disabled for this session, and the local save file will be kept.</source>
+        <translation>롬을 불러왔지만 카트리지 저장 데이터를 안전하게 백업하지 못했습니다. 이 세션에서는 저장 업로드를 비활성화하고 로컬 저장 파일을 남겨둡니다.</translation>
+    </message>
+    <message>
+        <source>No cartridge session</source>
+        <translation>카트리지 세션 없음</translation>
+    </message>
+    <message>
+        <source>Load a cartridge first.</source>
+        <translation>먼저 카트리지에서 불러오십시오.</translation>
+    </message>
+    <message>
+        <source>No save file</source>
+        <translation>저장 파일 없음</translation>
+    </message>
+    <message>
+        <source>No save file exists yet for this cartridge session.</source>
+        <translation>이 카트리지 세션에는 아직 저장 파일이 없습니다.</translation>
+    </message>
+    <message>
+        <source>Save upload failed</source>
+        <translation>저장 업로드 실패</translation>
+    </message>
+    <message>
+        <source>Save upload disabled</source>
+        <translation>저장 업로드 비활성화됨</translation>
+    </message>
+    <message>
+        <source>Cartridge save data was not safely backed up, so mGBA will not write this session&apos;s save data back to the cartridge. The local save file was kept:
+%1</source>
+        <translation>카트리지 저장 데이터를 안전하게 백업하지 못했으므로 mGBA가 이 세션의 저장 데이터를 카트리지에 다시 쓰지 않습니다. 로컬 저장 파일을 남겨두었습니다:
+%1</translation>
+    </message>
+    <message>
+        <source>Could not read the save file.</source>
+        <translation>저장 파일을 읽을 수 없습니다.</translation>
+    </message>
+    <message>
+        <source>Save uploaded</source>
+        <translation>저장 업로드 완료</translation>
+    </message>
+    <message>
+        <source>Save data was uploaded to the cartridge.</source>
+        <translation>저장 데이터를 카트리지에 업로드했습니다.</translation>
+    </message>
+    <message>
+        <source>Expected save SHA-256: %1
+Read-back save SHA-256: %2</source>
+        <translation>예상 저장 SHA-256: %1
+재확인한 저장 SHA-256: %2</translation>
+    </message>
+    <message>
+        <source>(unreadable)</source>
+        <translation>(읽을 수 없음)</translation>
+    </message>
+    <message>
+        <source>The save data was written, but reading it back from the cartridge did not match. The cartridge save was not marked as restored.</source>
+        <translation>저장 데이터를 썼지만 카트리지에서 다시 읽은 내용이 일치하지 않습니다. 카트리지 저장 복원 완료로 처리하지 않았습니다.</translation>
+    </message>
+    <message>
+        <source>%1
+
+The save file was kept for manual restore:
+%2</source>
+        <translation>%1
+
+수동 복원을 위해 저장 파일을 남겨두었습니다:
+%2</translation>
+    </message>
+    <message>
+        <source>The save file was kept for manual restore:
+%1</source>
+        <translation>수동 복원을 위해 저장 파일을 남겨두었습니다:
+%1</translation>
+    </message>
+    <message>
+        <source>Cartridge mode</source>
+        <translation>카트리지 모드</translation>
+    </message>
+    <message>
+        <source>This feature is disabled while a cartridge is loaded.</source>
+        <translation>카트리지를 불러온 동안에는 이 기능을 사용할 수 없습니다.</translation>
+    </message>
+    <message>
+        <source>Save upload in progress</source>
+        <translation>저장 업로드 중</translation>
+    </message>
+    <message>
+        <source>Save data is being written to the cartridge. Wait until it finishes before resetting or closing mGBA.</source>
+        <translation>저장 데이터를 카트리지에 쓰는 중입니다. 완료될 때까지 mGBA를 재시작하거나 종료할 수 없습니다.</translation>
+    </message>
+    <message>
+        <source>Load from Cartridge...</source>
+        <translation>카트리지에서 불러오기...</translation>
+    </message>
+    <message>
+        <source>Upload Save to Cartridge Now</source>
+        <translation>저장 데이터를 카트리지에 지금 업로드</translation>
+    </message>
 </context>
 <context>
     <name>QObject</name>
@@ -7012,6 +7410,70 @@ OpenGL로 설정했는데도 이 문제가 계속 발생하면, 그래픽 카드
         <location filename="../utils.cpp" line="187"/>
         <source>Menu</source>
         <translation>메뉴</translation>
+    </message>
+    <message>
+        <source>The embedded cartridge reader could not be started.</source>
+        <translation>내장 카트리지 리더를 시작하지 못했습니다.</translation>
+    </message>
+    <message>
+        <source>Could not back up the cartridge save data. The ROM was not loaded to avoid starting without the cartridge save.</source>
+        <translation>카트리지 저장 데이터를 백업하지 못했습니다. 카트리지 저장 데이터 없이 시작하지 않도록 롬을 로드하지 않았습니다.</translation>
+    </message>
+    <message>
+        <source>Cartridge save data could not be read. The ROM was not loaded.</source>
+        <translation>카트리지 저장 데이터를 읽을 수 없습니다. 롬을 로드하지 않았습니다.</translation>
+    </message>
+    <message>
+        <source>Initial save SHA-256: %1
+Verified save SHA-256: %2</source>
+        <translation>처음 읽은 저장 SHA-256: %1
+검증용 저장 SHA-256: %2</translation>
+    </message>
+    <message>
+        <source>Cartridge save data could not be verified. The ROM was not loaded.</source>
+        <translation>카트리지 저장 데이터를 검증하지 못했습니다. 롬을 로드하지 않았습니다.</translation>
+    </message>
+    <message>
+        <source>Could not preserve the verified cartridge save backup. The ROM was not loaded.</source>
+        <translation>검증된 카트리지 저장 백업을 보존하지 못했습니다. 롬을 로드하지 않았습니다.</translation>
+    </message>
+    <message>
+        <source>The cartridge reader returned blank data.</source>
+        <translation>카트리지 리더가 빈 데이터를 반환했습니다.</translation>
+    </message>
+    <message>
+        <source>The cartridge ROM header was not recognized.</source>
+        <translation>카트리지 롬 헤더를 인식하지 못했습니다.</translation>
+    </message>
+    <message>
+        <source>The cartridge ROM header checksum was invalid.</source>
+        <translation>카트리지 롬 헤더 체크섬이 올바르지 않습니다.</translation>
+    </message>
+    <message>
+        <source>No valid cartridge ROM was detected. Make sure the cartridge is inserted correctly.</source>
+        <translation>유효한 카트리지 롬을 감지하지 못했습니다. 카트리지가 제대로 꽂혀 있는지 확인하십시오.</translation>
+    </message>
+    <message>
+        <source>Could not back up the cartridge ROM.</source>
+        <translation>카트리지 롬을 백업하지 못했습니다.</translation>
+    </message>
+    <message>
+        <source>Could not restore the save data to the cartridge.</source>
+        <translation>저장 데이터를 카트리지에 복원하지 못했습니다.</translation>
+    </message>
+    <message>
+        <source>Expected save SHA-256: %1
+Read-back save SHA-256: %2</source>
+        <translation>예상 저장 SHA-256: %1
+재확인한 저장 SHA-256: %2</translation>
+    </message>
+    <message>
+        <source>(unreadable)</source>
+        <translation>(읽을 수 없음)</translation>
+    </message>
+    <message>
+        <source>The save data was written, but reading it back from the cartridge did not match. The cartridge save was not marked as restored.</source>
+        <translation>저장 데이터를 썼지만 카트리지에서 다시 읽은 내용이 일치하지 않습니다. 카트리지 저장 복원 완료로 처리하지 않았습니다.</translation>
     </message>
 </context>
 <context>

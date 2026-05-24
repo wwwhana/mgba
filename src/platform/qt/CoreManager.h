@@ -27,7 +27,8 @@ public:
 
 public slots:
 	CoreController* loadGame(const QString& path);
-	CoreController* loadGame(VFile* vf, const QString& path, const QString& base);
+	CoreController* loadGame(const QString& path, const QString& saveOverride);
+	CoreController* loadGame(VFile* vf, const QString& path, const QString& base, const QString& saveOverride = {});
 	CoreController* loadBIOS(int platform, const QString& path);
 
 signals:

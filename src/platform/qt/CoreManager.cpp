@@ -36,6 +36,10 @@ void CoreManager::setMultiplayerController(MultiplayerController* multiplayer) {
 }
 
 CoreController* CoreManager::loadGame(const QString& path) {
+	return loadGame(path, {});
+}
+
+CoreController* CoreManager::loadGame(const QString& path, const QString& saveOverride) {
 	QFileInfo info(path);
 	if (!info.isReadable()) {
 		// Open specific file in archive
@@ -53,7 +57,7 @@ CoreController* CoreManager::loadGame(const QString& path) {
 				vf = vfclone;
 			}
 			dir->close(dir);
-			return loadGame(vf, fname, base);
+			return loadGame(vf, fname, base, saveOverride);
 		} else {
 			LOG(QT, ERROR) << tr("Failed to open game file: %1").arg(path);
 		}
@@ -107,15 +111,15 @@ CoreController* CoreManager::loadGame(const QString& path) {
 			                             "*." + info.suffix());
 			if (!newPath.isEmpty()) {
 				vf->close(vf);
-				return loadGame(newPath);
+				return loadGame(newPath, saveOverride);
 			}
 		}
 	}
 
-	return loadGame(vf, info.fileName(), dir.canonicalPath());
+	return loadGame(vf, info.fileName(), dir.canonicalPath(), saveOverride);
 }
 
-CoreController* CoreManager::loadGame(VFile* vf, const QString& path, const QString& base) {
+CoreController* CoreManager::loadGame(VFile* vf, const QString& path, const QString& base, const QString& saveOverride) {
 	if (!vf) {
 		return nullptr;
 	}
@@ -149,7 +153,23 @@ CoreController* CoreManager::loadGame(VFile* vf, const QString& path, const QStr
 	}
 	bytes = info.dir().canonicalPath().toUtf8();
 	mDirectorySetAttachBase(&core->dirs, VDirOpen(bytes.constData()));
-	if (!mCoreAutoloadSave(core)) {
+
+	bool saveLoaded = false;
+	if (!saveOverride.isEmpty()) {
+		VFile* save = VFileDevice::open(saveOverride, O_CREAT | O_RDWR);
+		if (save) {
+			saveLoaded = core->loadSave(core, save);
+			if (!saveLoaded) {
+				save->close(save);
+			}
+		}
+		if (!saveLoaded) {
+			LOG(QT, ERROR) << tr("Failed to open save file: %1").arg(saveOverride);
+			mCoreConfigDeinit(&core->config);
+			core->deinit(core);
+			return nullptr;
+		}
+	} else if (!mCoreAutoloadSave(core)) {
 		QString filter = romFilters(false, core->platform(core), true);
 		QString newPath = saveFailed(vf, tr("Could not open save file"),
 		                             tr("Failed to open save file; in-game saves cannot be updated."),
@@ -157,7 +177,7 @@ CoreController* CoreManager::loadGame(VFile* vf, const QString& path, const QStr
 		if (!newPath.isEmpty()) {
 			mCoreConfigDeinit(&core->config);
 			core->deinit(core);
-			return loadGame(newPath);
+			return loadGame(newPath, saveOverride);
 		}
 	}
 	mCoreAutoloadCheats(core);
@@ -167,6 +187,9 @@ CoreController* CoreManager::loadGame(VFile* vf, const QString& path, const QStr
 		cc->setMultiplayerController(m_multiplayer);
 	}
 	cc->setPath(path, info.dir().canonicalPath());
+	if (saveLoaded) {
+		cc->setSavePath(saveOverride);
+	}
 	emit coreLoaded(cc);
 	return cc;
 }

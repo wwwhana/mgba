@@ -46,6 +46,12 @@ CoreController::CoreController(mCore* core, QObject* parent)
 {
 	m_threadContext.core = core;
 	m_threadContext.userData = this;
+	mCoreCallbacks saveCallbacks{};
+	saveCallbacks.context = this;
+	saveCallbacks.savedataUpdated = [](void* context) {
+		QMetaObject::invokeMethod(static_cast<CoreController*>(context), "savedataUpdated", Qt::QueuedConnection);
+	};
+	m_threadContext.core->addCoreCallbacks(m_threadContext.core, &saveCallbacks);
 	updateROMInfo();
 
 #ifdef M_CORE_GBA
@@ -238,6 +244,10 @@ CoreController::~CoreController() {
 void CoreController::setPath(const QString& path, const QString& base) {
 	m_path = path;
 	m_baseDirectory = base;
+}
+
+void CoreController::setSavePath(const QString& path) {
+	m_savePath = path;
 }
 
 const mColor* CoreController::drawContext() {
@@ -651,9 +661,17 @@ void CoreController::overrideMute(bool override) {
 }
 
 void CoreController::loadState(int slot) {
+	loadState(slot, -1);
+}
+
+void CoreController::loadState(int slot, int flags) {
 	if (slot > 0 && slot != m_stateSlot) {
 		m_stateSlot = slot;
 		m_backupSaveState.clear();
+	}
+	int savedFlags = m_loadStateFlags;
+	if (flags != -1) {
+		m_loadStateFlags = flags;
 	}
 	m_crashSeen = false;
 	mCoreThreadClearCrashed(&m_threadContext);
@@ -668,6 +686,7 @@ void CoreController::loadState(int slot) {
 			emit controller->stateLoaded();
 		}
 	});
+	m_loadStateFlags = savedFlags;
 }
 
 void CoreController::loadState(const QString& path, int flags) {

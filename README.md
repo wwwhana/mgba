@@ -37,6 +37,7 @@ Features
 - Game debugging via a command-line interface and GDB remote support, compatible with Ghidra and IDA Pro.
 - Configurable emulation rewinding.
 - Support for loading and exporting GameShark and Action Replay snapshots.
+- Embedded cartridge reader bridge for dumping a connected cartridge, running it in mGBA, and restoring changed save data.
 - Cores available for RetroArch/Libretro and OpenEmu.
 - Community-provided translations for several languages via [Weblate](https://hosted.weblate.org/engage/mgba).
 - Many, many smaller things.
@@ -254,6 +255,17 @@ Footnotes
 [downloads]: http://mgba.io/downloads.html
 [source]: https://github.com/mgba-emu/mgba/
 
+Cartridge reader hardware test
+------------------------------
+
+The embedded cartridge reader can be smoke-tested with the bundled FlashGBX CLI after a macOS bundle has been built:
+
+```sh
+tools/flashgbx-cartridge-test.py --port /dev/cu.usbserial-210 --mode dmg --dmg-savetype 256k --dmg-mbc 0x10
+```
+
+The default test is read-only. It records FlashGBX logs, reads cartridge info, backs up save data twice and compares hashes, backs up the ROM, validates the ROM header, and writes a `summary.json` under `dist/cartridge-test/`. Add `--write-save-verify` only when explicitly testing cartridge save restore/readback.
+
 Copyright
 ---------
 
@@ -261,6 +273,7 @@ mGBA is Copyright © 2013 – 2026 Jeffrey Pfau. It is distributed under the [Mo
 
 mGBA contains the following third-party libraries:
 
+- [FlashGBX](https://github.com/Lesserkuma/FlashGBX), which is copyright © Lesserkuma and, when bundled as the embedded cartridge reader, is distributed under the GNU General Public License version 3. A copy of the license is available in the app bundle at `Contents/Resources/FlashGBX/LICENSE`.
 - [inih](https://github.com/benhoyt/inih), which is copyright © 2009 – 2020 Ben Hoyt and used under a BSD 3-clause license.
 - [LZMA SDK](http://www.7-zip.org/sdk.html), which is public domain.
 - [MurmurHash3](https://github.com/aappleby/smhasher) implementation by Austin Appleby, which is public domain.

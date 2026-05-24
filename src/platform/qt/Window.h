@@ -8,6 +8,8 @@
 #include <QAction>
 #include <QDateTime>
 #include <QElapsedTimer>
+#include <QFileSystemWatcher>
+#include <QHash>
 #include <QList>
 #include <QMainWindow>
 #include <QTimer>
@@ -78,6 +80,7 @@ signals:
 public slots:
 	void setController(CoreController* controller);
 	void selectROM();
+	void selectFlashGBXCartridge();
 	void bootBIOS();
 #ifdef USE_SQLITE3
 	void selectROMInArchive();
@@ -173,6 +176,22 @@ private:
 	void setupMenu(QMenuBar*);
 	void setupOptions();
 	void openStateWindow(LoadSave);
+	void loadFlashGBXSafeState(int slot = 0);
+	void restoreFlashGBXSave();
+	void configureFlashGBXSaveWatcher();
+	void scheduleFlashGBXSaveUpload();
+	bool uploadFlashGBXSave(bool force = false);
+	void writeFlashGBXManifest(const QString& restoreStatus);
+	void cleanupFlashGBXSessionTempFiles(bool removeSave = false);
+	bool isFlashGBXCartridgeActive() const;
+	bool blockFlashGBXCartridgeRestrictedAction();
+	bool blockFlashGBXSaveUploadInProgress();
+	void showFlashGBXOverlayWarning(const QString& message);
+	bool confirmFlashGBXOverlayWarning(const QString& message);
+	void restrictFlashGBXAction(const std::shared_ptr<Action>& action);
+	void updateFlashGBXRestrictedActions();
+	void blockFlashGBXSaveUploadAction(const std::shared_ptr<Action>& action);
+	void updateFlashGBXSaveUploadActions();
 
 	void attachWidget(QWidget* widget);
 	void detachWidget();
@@ -242,6 +261,38 @@ private:
 	QString m_pendingState;
 	bool m_pendingPause = false;
 	bool m_pendingClose = false;
+
+	struct FlashGBXSession {
+		QString mode;
+		QString sessionDir;
+		QString romPath;
+		QString savePath;
+		QString initialSavePath;
+		QString initialSaveHash;
+		qint64 savePayloadSize = 0;
+		QString flashcartType;
+		QString saveType;
+		QString dmgMbc;
+		QString preloadWarning;
+		QStringList restoreCommand;
+		bool saveUploadArmed = false;
+	};
+	std::unique_ptr<FlashGBXSession> m_flashgbxSession;
+	bool m_flashgbxBusy = false;
+	bool m_flashgbxUploadPending = false;
+	bool m_flashgbxSaveUploadBusy = false;
+	bool m_flashgbxUseSoftwareDisplay = false;
+	bool m_flashgbxRestrictionsActive = false;
+	bool m_flashgbxSaveUploadActionsBlocked = false;
+	bool m_flashgbxCloseAfterUpload = false;
+	QString m_flashgbxQueuedSaveHash;
+	QString m_flashgbxUploadingSaveHash;
+	QList<std::shared_ptr<Action>> m_flashgbxRestrictedActions;
+	QList<std::shared_ptr<Action>> m_flashgbxSaveUploadBlockedActions;
+	QHash<Action*, bool> m_flashgbxRestrictedActionStates;
+	QHash<Action*, bool> m_flashgbxSaveUploadActionStates;
+	QFileSystemWatcher m_flashgbxSaveWatcher;
+	QTimer m_flashgbxSaveUploadTimer;
 
 	bool m_hitUnimplementedBiosCall;
 

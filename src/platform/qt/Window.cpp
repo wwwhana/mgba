@@ -7,15 +7,40 @@
 
 #include <QKeyEvent>
 #include <QKeySequence>
+#include <QCheckBox>
+#include <QComboBox>
+#include <QCoreApplication>
+#include <QCryptographicHash>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QDir>
+#include <QFile>
+#include <QFormLayout>
+#include <QHBoxLayout>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QLabel>
+#include <QLineEdit>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QMimeData>
 #include <QPainter>
+#include <QProcess>
+#include <QProcessEnvironment>
+#include <QProgressDialog>
+#include <QPushButton>
+#include <QRadioButton>
+#include <QRegularExpression>
 #include <QScreen>
+#include <QScrollArea>
+#include <QStandardPaths>
+#include <QVBoxLayout>
+#include <QWidget>
 #include <QWindow>
 
 #ifdef Q_OS_WIN
 #include <dwmapi.h>
+#include <windows.h>
 #endif
 
 #ifdef USE_SQLITE3
@@ -74,6 +99,7 @@
 #endif
 
 #include <mgba/core/version.h>
+#include <mgba/core/serialize.h>
 #include <mgba/core/cheats.h>
 #ifdef M_CORE_GB
 #include <mgba/internal/gb/gb.h>
@@ -92,6 +118,567 @@
 #include "moc_Window.cpp"
 
 using namespace QGBA;
+
+namespace {
+
+struct FlashGBXProcessResult {
+	int exitCode = -1;
+	QString output;
+};
+
+struct FlashGBXLoadResult {
+	bool success = false;
+	bool saveBackedUp = false;
+	bool saveUploadArmed = false;
+	qint64 savePayloadSize = 0;
+	QString error;
+	QString output;
+	QString mode;
+	QString sessionDir;
+	QString romPath;
+	QString savePath;
+	QString initialSavePath;
+	QString initialSaveHash;
+	QString flashcartType;
+	QString saveType;
+	QString dmgMbc;
+	QString preloadWarning;
+	QStringList restoreCommand;
+};
+
+struct FlashGBXUploadResult {
+	bool success = false;
+	QString error;
+	QString output;
+	QString saveHash;
+	QString verifyHash;
+	QString verifyPath;
+};
+
+QStringList splitCommandLine(const QString& command) {
+	QStringList parts;
+	QString current;
+	QChar quote;
+	bool escaped = false;
+	for (QChar ch : command) {
+		if (escaped) {
+			current.append(ch);
+			escaped = false;
+			continue;
+		}
+		if (ch == QLatin1Char('\\')) {
+			escaped = true;
+			continue;
+		}
+		if (!quote.isNull()) {
+			if (ch == quote) {
+				quote = QChar();
+			} else {
+				current.append(ch);
+			}
+			continue;
+		}
+		if (ch == QLatin1Char('"') || ch == QLatin1Char('\'')) {
+			quote = ch;
+			continue;
+		}
+		if (ch.isSpace()) {
+			if (!current.isEmpty()) {
+				parts.append(current);
+				current.clear();
+			}
+			continue;
+		}
+		current.append(ch);
+	}
+	if (escaped) {
+		current.append(QLatin1Char('\\'));
+	}
+	if (!current.isEmpty()) {
+		parts.append(current);
+	}
+	return parts;
+}
+
+QString shellJoin(const QStringList& command) {
+	QStringList escaped;
+	for (QString arg : command) {
+		if (arg.isEmpty()) {
+			escaped.append(QStringLiteral("''"));
+			continue;
+		}
+		bool needsQuotes = false;
+		for (QChar ch : arg) {
+			if (ch.isSpace() || QStringLiteral("'\"\\$&;()<>|*?[]{}").contains(ch)) {
+				needsQuotes = true;
+				break;
+			}
+		}
+		if (needsQuotes) {
+			arg.replace(QLatin1Char('\''), QStringLiteral("'\\''"));
+			escaped.append(QLatin1Char('\'') + arg + QLatin1Char('\''));
+		} else {
+			escaped.append(arg);
+		}
+	}
+	return escaped.join(QLatin1Char(' '));
+}
+
+QString fileSha256(const QString& path) {
+	QFile file(path);
+	if (!file.open(QIODevice::ReadOnly)) {
+		return QString();
+	}
+	QCryptographicHash hash(QCryptographicHash::Sha256);
+	while (!file.atEnd()) {
+		hash.addData(file.read(1024 * 1024));
+	}
+	return QString::fromLatin1(hash.result().toHex());
+}
+
+QString fileSha256Prefix(const QString& path, qint64 bytes) {
+	if (bytes <= 0) {
+		return fileSha256(path);
+	}
+	QFile file(path);
+	if (!file.open(QIODevice::ReadOnly)) {
+		return QString();
+	}
+	QCryptographicHash hash(QCryptographicHash::Sha256);
+	qint64 remaining = bytes;
+	while (remaining > 0 && !file.atEnd()) {
+		const QByteArray chunk = file.read(qMin<qint64>(remaining, 1024 * 1024));
+		if (chunk.isEmpty()) {
+			break;
+		}
+		hash.addData(chunk);
+		remaining -= chunk.size();
+	}
+	if (remaining != 0) {
+		return QString();
+	}
+	return QString::fromLatin1(hash.result().toHex());
+}
+
+bool copyFilePrefix(const QString& sourcePath, const QString& destPath, qint64 bytes) {
+	if (bytes <= 0) {
+		QFile::remove(destPath);
+		return QFile::copy(sourcePath, destPath);
+	}
+	QFile source(sourcePath);
+	if (!source.open(QIODevice::ReadOnly)) {
+		return false;
+	}
+	QFile dest(destPath);
+	if (!dest.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+		return false;
+	}
+	qint64 remaining = bytes;
+	while (remaining > 0) {
+		const QByteArray chunk = source.read(qMin<qint64>(remaining, 1024 * 1024));
+		if (chunk.isEmpty()) {
+			return false;
+		}
+		if (dest.write(chunk) != chunk.size()) {
+			return false;
+		}
+		remaining -= chunk.size();
+	}
+	return true;
+}
+
+QString savePathForRomPath(const QString& romPath) {
+	const QFileInfo romInfo(romPath);
+	return QDir(romInfo.dir()).filePath(romInfo.completeBaseName() + QStringLiteral(".sav"));
+}
+
+QByteArray readFilePrefix(const QString& path, qint64 maxSize) {
+	QFile file(path);
+	if (!file.open(QIODevice::ReadOnly)) {
+		return QByteArray();
+	}
+	return file.read(maxSize);
+}
+
+bool bytesMatch(const QByteArray& data, int offset, const unsigned char* expected, int length) {
+	if (data.size() < offset + length) {
+		return false;
+	}
+	for (int i = 0; i < length; ++i) {
+		if (static_cast<unsigned char>(data.at(offset + i)) != expected[i]) {
+			return false;
+		}
+	}
+	return true;
+}
+
+bool isUniformData(const QByteArray& data) {
+	if (data.isEmpty()) {
+		return true;
+	}
+	const char first = data.at(0);
+	for (char byte : data) {
+		if (byte != first) {
+			return false;
+		}
+	}
+	return true;
+}
+
+bool gbHeaderChecksumValid(const QByteArray& data) {
+	if (data.size() < 0x14E) {
+		return false;
+	}
+	int checksum = 0;
+	for (int i = 0x134; i <= 0x14C; ++i) {
+		checksum = checksum - static_cast<unsigned char>(data.at(i)) - 1;
+	}
+	return static_cast<unsigned char>(checksum) == static_cast<unsigned char>(data.at(0x14D));
+}
+
+bool gbaHeaderChecksumValid(const QByteArray& data) {
+	if (data.size() < 0xBE) {
+		return false;
+	}
+	int checksum = 0;
+	for (int i = 0xA0; i <= 0xBC; ++i) {
+		checksum += static_cast<unsigned char>(data.at(i));
+	}
+	return static_cast<unsigned char>(-checksum - 0x19) == static_cast<unsigned char>(data.at(0xBD));
+}
+
+bool gbRomHeaderHasRtc(const QByteArray& header) {
+	if (header.size() <= 0x147) {
+		return false;
+	}
+	switch (static_cast<unsigned char>(header.at(0x147))) {
+	case 0x0F:
+	case 0x10:
+	case 0xFC:
+	case 0xFD:
+	case 0xFE:
+		return true;
+	default:
+		return false;
+	}
+}
+
+QString cartridgeRtcWarningKeyForRom(const QString& path, const QString& mode) {
+	if (mode != QLatin1String("dmg")) {
+		return QString();
+	}
+	const QByteArray header = readFilePrefix(path, 0x150);
+	if (!gbHeaderChecksumValid(header) || !gbRomHeaderHasRtc(header)) {
+		return QString();
+	}
+
+	QByteArray title = header.mid(0x134, 16);
+	const int zero = title.indexOf('\0');
+	if (zero >= 0) {
+		title.truncate(zero);
+	}
+	const QString titleText = QString::fromLatin1(title.toHex());
+	const QString mapper = QString::number(static_cast<unsigned char>(header.at(0x147)), 16);
+	const QString checksum = QString::number(static_cast<unsigned char>(header.at(0x14E)), 16) +
+	                         QString::number(static_cast<unsigned char>(header.at(0x14F)), 16);
+	return QStringLiteral("dmg:%1:%2:%3").arg(titleText, mapper, checksum);
+}
+
+bool cartridgeRomLooksValid(const QString& path, const QString& mode, QString* reason = nullptr) {
+	static const unsigned char gbLogo[] = {
+		0xCE, 0xED, 0x66, 0x66, 0xCC, 0x0D, 0x00, 0x0B,
+		0x03, 0x73, 0x00, 0x83, 0x00, 0x0C, 0x00, 0x0D,
+		0x00, 0x08, 0x11, 0x1F, 0x88, 0x89, 0x00, 0x0E,
+		0xDC, 0xCC, 0x6E, 0xE6, 0xDD, 0xDD, 0xD9, 0x99,
+		0xBB, 0xBB, 0x67, 0x63, 0x6E, 0x0E, 0xEC, 0xCC,
+		0xDD, 0xDC, 0x99, 0x9F, 0xBB, 0xB9, 0x33, 0x3E
+	};
+	static const unsigned char gbaLogo[] = {
+		0x24, 0xFF, 0xAE, 0x51, 0x69, 0x9A, 0xA2, 0x21,
+		0x3D, 0x84, 0x82, 0x0A, 0x84, 0xE4, 0x09, 0xAD,
+		0x11, 0x24, 0x8B, 0x98, 0xC0, 0x81, 0x7F, 0x21,
+		0xA3, 0x52, 0xBE, 0x19, 0x93, 0x09, 0xCE, 0x20,
+		0x10, 0x46, 0x4A, 0x4A, 0xF8, 0x27, 0x31, 0xEC,
+		0x58, 0xC7, 0xE8, 0x33, 0x82, 0xE3, 0xCE, 0xBF,
+		0x85, 0xF4, 0xDF, 0x94, 0xCE, 0x4B, 0x09, 0xC1,
+		0x94, 0x56, 0x8A, 0xC0, 0x13, 0x72, 0xA7, 0xFC,
+		0x9F, 0x84, 0x4D, 0x73, 0xA3, 0xCA, 0x9A, 0x61,
+		0x58, 0x97, 0xA3, 0x27, 0xFC, 0x03, 0x98, 0x76,
+		0x23, 0x1D, 0xC7, 0x61, 0x03, 0x04, 0xAE, 0x56,
+		0xBF, 0x38, 0x84, 0x00, 0x40, 0xA7, 0x0E, 0xFD,
+		0xFF, 0x52, 0xFE, 0x03, 0x6F, 0x95, 0x30, 0xF1,
+		0x97, 0xFB, 0xC0, 0x85, 0x60, 0xD6, 0x80, 0x25,
+		0xA9, 0x63, 0xBE, 0x03, 0x01, 0x4E, 0x38, 0xE2,
+		0xF9, 0xA2, 0x34, 0xFF, 0xBB, 0x3E, 0x03, 0x44,
+		0x78, 0x00, 0x90, 0xCB, 0x88, 0x11, 0x3A, 0x94,
+		0x65, 0xC0, 0x7C, 0x63, 0x87, 0xF0, 0x3C, 0xAF,
+		0xD6, 0x25, 0xE4, 0x8B, 0x38, 0x0A, 0xAC, 0x72,
+		0x21, 0xD4, 0xF8, 0x07
+	};
+
+	const QByteArray header = readFilePrefix(path, 0x200);
+	if (isUniformData(header)) {
+		if (reason) {
+			*reason = QObject::tr("The cartridge reader returned blank data.");
+		}
+		return false;
+	}
+
+	const bool isGB = mode == QLatin1String("dmg");
+	const int logoOffset = isGB ? 0x104 : 0x04;
+	const unsigned char* logo = isGB ? gbLogo : gbaLogo;
+	const int logoLength = isGB ? int(sizeof(gbLogo)) : int(sizeof(gbaLogo));
+	if (!bytesMatch(header, logoOffset, logo, logoLength)) {
+		if (reason) {
+			*reason = QObject::tr("The cartridge ROM header was not recognized.");
+		}
+		return false;
+	}
+
+	const bool checksumValid = isGB ? gbHeaderChecksumValid(header) : gbaHeaderChecksumValid(header);
+	if (!checksumValid) {
+		if (reason) {
+			*reason = QObject::tr("The cartridge ROM header checksum was invalid.");
+		}
+		return false;
+	}
+	return true;
+}
+
+QString appResourcesPath() {
+	QDir dir(QCoreApplication::applicationDirPath());
+	if (dir.dirName() == QLatin1String("MacOS") && dir.cdUp() && dir.dirName() == QLatin1String("Contents") && dir.cd(QStringLiteral("Resources"))) {
+		return dir.absolutePath();
+	}
+	return QCoreApplication::applicationDirPath();
+}
+
+QStringList executableSearchPaths() {
+	QStringList paths = QProcessEnvironment::systemEnvironment().value(QStringLiteral("PATH")).split(QDir::listSeparator(), Qt::SkipEmptyParts);
+#ifndef Q_OS_WIN
+	for (const QString& path : {QStringLiteral("/opt/homebrew/bin"), QStringLiteral("/usr/local/bin"), QStringLiteral("/usr/bin"), QStringLiteral("/bin")}) {
+		if (!paths.contains(path)) {
+			paths.prepend(path);
+		}
+	}
+#endif
+	return paths;
+}
+
+QString resolveExecutable(const QString& program) {
+	if (program.contains(QLatin1Char('/'))) {
+		return QFileInfo::exists(program) ? program : QString();
+	}
+	const QString resolved = QStandardPaths::findExecutable(program, executableSearchPaths());
+	return resolved.isEmpty() ? QString() : resolved;
+}
+
+QString embeddedFlashGBXCommand() {
+	const QDir resources(appResourcesPath());
+	const QStringList standaloneCandidates{
+		resources.filePath(QStringLiteral("FlashGBX/flashgbx-cli/flashgbx-cli")),
+		resources.filePath(QStringLiteral("FlashGBX/flashgbx-cli/flashgbx-cli.exe")),
+	};
+	for (const QString& standalone : standaloneCandidates) {
+		if (QFileInfo::exists(standalone)) {
+			return shellJoin(QStringList{standalone, QStringLiteral("--cfgdir"), QStringLiteral("subdir")});
+		}
+	}
+	const QString runner = resources.filePath(QStringLiteral("FlashGBX/flashgbx-bundled-runner.py"));
+	if (QFileInfo::exists(runner)) {
+#ifdef Q_OS_WIN
+		const QStringList pythonCandidates{
+			resolveExecutable(QStringLiteral("python3.exe")),
+			resolveExecutable(QStringLiteral("python.exe")),
+			resolveExecutable(QStringLiteral("py.exe")),
+		};
+#else
+		const QStringList pythonCandidates{
+			QStringLiteral("/opt/homebrew/bin/python3"),
+			QStringLiteral("/usr/local/bin/python3"),
+			QStringLiteral("/usr/bin/python3"),
+		};
+#endif
+		for (const QString& python : pythonCandidates) {
+			if (!python.isEmpty() && QFileInfo::exists(python)) {
+				return shellJoin(QStringList{python, runner, QStringLiteral("--cfgdir"), QStringLiteral("subdir")});
+			}
+		}
+	}
+	return QString();
+}
+
+QString defaultFlashGBXCommand() {
+	return embeddedFlashGBXCommand();
+}
+
+QStringList flashGBXDevicePorts() {
+	QStringList ports;
+#ifdef Q_OS_WIN
+	for (int i = 1; i <= 256; ++i) {
+		const QString port = QStringLiteral("COM%1").arg(i);
+		wchar_t target[512];
+		if (QueryDosDeviceW(reinterpret_cast<LPCWSTR>(port.utf16()), target, sizeof(target) / sizeof(target[0]))) {
+			ports.append(port);
+		}
+	}
+#else
+	QDir devDir(QStringLiteral("/dev"));
+	for (const QString& entry : devDir.entryList(QStringList{QStringLiteral("cu.*"), QStringLiteral("tty.*")}, QDir::System | QDir::Files, QDir::Name)) {
+		ports.append(QStringLiteral("/dev/") + entry);
+	}
+#endif
+	ports.removeDuplicates();
+	ports.sort();
+	return ports;
+}
+
+QStringList buildFlashGBXCommand(const QStringList& base, const QString& mode, const QString& action,
+                                 const QString& path, const QStringList& extra = {}) {
+	QStringList command = base;
+	command << QStringLiteral("--cli")
+	        << QStringLiteral("--mode") << mode
+	        << QStringLiteral("--action") << action
+	        << QStringLiteral("--overwrite");
+	command << extra;
+	command << path;
+	return command;
+}
+
+FlashGBXProcessResult runProcess(const QStringList& command) {
+	FlashGBXProcessResult result;
+	if (command.isEmpty()) {
+		result.output = QStringLiteral("Empty command");
+		return result;
+	}
+
+	QProcess process;
+	const QString program = resolveExecutable(command.first());
+	if (program.isEmpty()) {
+		result.output = QStringLiteral("Could not find executable: %1\nSearched PATH: %2")
+		                    .arg(command.first(), executableSearchPaths().join(QDir::listSeparator()));
+		return result;
+	}
+
+	QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
+	environment.insert(QStringLiteral("PATH"), executableSearchPaths().join(QDir::listSeparator()));
+	process.setProcessEnvironment(environment);
+	process.setProgram(program);
+	process.setArguments(command.mid(1));
+	process.setProcessChannelMode(QProcess::MergedChannels);
+	process.start();
+	if (!process.waitForStarted()) {
+		result.output = process.errorString();
+		return result;
+	}
+	process.waitForFinished(-1);
+	result.exitCode = process.exitStatus() == QProcess::NormalExit ? process.exitCode() : -1;
+	result.output = QString::fromLocal8Bit(process.readAllStandardOutput());
+	if (result.output.isEmpty() && process.exitStatus() != QProcess::NormalExit) {
+		result.output = process.errorString();
+	}
+	return result;
+}
+
+bool flashGBXActionSucceeded(const QString& action, const FlashGBXProcessResult& result, const QString& expectedPath = QString(),
+                             const QString& mode = QString(), QString* reason = nullptr) {
+	if (result.exitCode != 0) {
+		return false;
+	}
+	if (action == QLatin1String("backup-rom")) {
+		return cartridgeRomLooksValid(expectedPath, mode, reason);
+	}
+	if (action == QLatin1String("backup-save")) {
+		return QFileInfo::exists(expectedPath) || result.output.contains(QStringLiteral("The save data backup is complete"));
+	}
+	if (action == QLatin1String("restore-save")) {
+		return result.output.contains(QStringLiteral("The save data was restored"));
+	}
+	return false;
+}
+
+QString displayProcessOutput(const FlashGBXProcessResult& result) {
+	QStringList lines = result.output.split(QLatin1Char('\n'));
+	while (!lines.isEmpty() && (lines.first().startsWith(QStringLiteral("FlashGBX v")) ||
+	                           lines.first().startsWith(QStringLiteral("https://github.com/Lesserkuma/FlashGBX")) ||
+	                           lines.first().trimmed().isEmpty())) {
+		lines.removeFirst();
+	}
+	QString output = lines.join(QLatin1Char('\n'));
+	output.replace(QStringLiteral("FlashGBX"), QStringLiteral("cartridge reader"));
+	return output.trimmed();
+}
+
+void appendProcessOutput(QString* output, const QString& action, const FlashGBXProcessResult& result) {
+	output->append(QStringLiteral("Action: %1\n").arg(action));
+	if (!result.output.isEmpty()) {
+		const QString displayOutput = displayProcessOutput(result);
+		if (!displayOutput.isEmpty()) {
+			output->append(displayOutput);
+			output->append(QLatin1Char('\n'));
+		}
+	}
+}
+
+bool flashGBXOutputHasRtcBatteryWarning(const QString& output, const QString& mode, const QString& dmgMbc, QString* rtcLineOut = nullptr) {
+	QString rtcLine;
+	QString mapperLine;
+	for (const QString& rawLine : output.split(QLatin1Char('\n'))) {
+		const QString line = rawLine.trimmed();
+		if (line.startsWith(QStringLiteral("Real Time Clock:"), Qt::CaseInsensitive)) {
+			rtcLine = line;
+		} else if (line.startsWith(QStringLiteral("Mapper Type:"), Qt::CaseInsensitive)) {
+			mapperLine = line;
+		}
+	}
+
+	if (rtcLineOut) {
+		*rtcLineOut = rtcLine;
+	}
+
+	const QString lowerMbc = dmgMbc.toLower();
+	const bool selectedRtcMapper = mode == QLatin1String("dmg") &&
+	                               (lowerMbc == QLatin1String("0x10") ||
+	                                lowerMbc == QLatin1String("0x110") ||
+	                                lowerMbc == QLatin1String("0xfe") ||
+	                                lowerMbc == QLatin1String("0xfd"));
+	const bool detectedRtcMapper = mapperLine.contains(QStringLiteral("RTC"), Qt::CaseInsensitive);
+	const bool rtcExpected = selectedRtcMapper || detectedRtcMapper;
+	const bool badRtc = rtcLine.contains(QStringLiteral("Not available"), Qt::CaseInsensitive) ||
+	                    rtcLine.contains(QStringLiteral("Invalid"), Qt::CaseInsensitive) ||
+	                    rtcLine.contains(QStringLiteral("Battery dry"), Qt::CaseInsensitive);
+	bool resetLookingRtc = false;
+	const QRegularExpression rtcTimePattern(QStringLiteral(R"(Real Time Clock:\s+(\d+)\s+days?,\s+(\d+):(\d+):(\d+))"),
+	                                        QRegularExpression::CaseInsensitiveOption);
+	const QRegularExpressionMatch rtcTimeMatch = rtcTimePattern.match(rtcLine);
+	if (rtcTimeMatch.hasMatch()) {
+		const int days = rtcTimeMatch.captured(1).toInt();
+		resetLookingRtc = days == 0;
+	}
+	const bool unstableSave = output.contains(QStringLiteral("not battery-backed"), Qt::CaseInsensitive) ||
+	                          output.contains(QStringLiteral("cartridge connection is unstable"), Qt::CaseInsensitive);
+	return (rtcExpected && (badRtc || resetLookingRtc)) || unstableSave;
+}
+
+QString flashGBXRtcBatteryWarning(const QString& output, const QString& mode, const QString& dmgMbc) {
+	QString rtcLine;
+	if (!flashGBXOutputHasRtcBatteryWarning(output, mode, dmgMbc, &rtcLine)) {
+		return QString();
+	}
+
+	QString detail;
+	if (!rtcLine.isEmpty()) {
+		detail = QObject::tr("\n\nReader status: %1").arg(rtcLine);
+	}
+	return QObject::tr("RTC or save battery issue suspected.\n\nThis cartridge appears to use a battery-backed RTC/save circuit, but the cartridge reader could not read stable RTC data or reported reset-looking RTC data. The game may report that no save exists, or new saves may not persist.%1\n\nDo you want to load the ROM anyway?")
+	    .arg(detail);
+}
+
+QString rememberedFlashGBXRtcBatteryWarning() {
+	return QObject::tr("RTC or save battery issue suspected.\n\nThis cartridge previously reported unstable RTC/save battery data. The game may report that no save exists, or new saves may not persist.\n\nDo you want to load the ROM anyway?");
+}
+
+}
 
 Window::Window(CoreManager* manager, ConfigController* config, int playerId, QWidget* parent)
 	: QMainWindow(parent)
@@ -180,6 +767,15 @@ Window::Window(CoreManager* manager, ConfigController* config, int playerId, QWi
 	m_mustRestart.setSingleShot(true);
 	m_mustReset.setInterval(MUST_RESTART_TIMEOUT);
 	m_mustReset.setSingleShot(true);
+	m_flashgbxSaveUploadTimer.setInterval(1500);
+	m_flashgbxSaveUploadTimer.setSingleShot(true);
+	connect(&m_flashgbxSaveUploadTimer, &QTimer::timeout, this, [this]() {
+		uploadFlashGBXSave(false);
+	});
+	connect(&m_flashgbxSaveWatcher, &QFileSystemWatcher::fileChanged, this, [this](const QString&) {
+		configureFlashGBXSaveWatcher();
+		scheduleFlashGBXSaveUpload();
+	});
 
 #ifdef BUILD_SDL
 	m_inputController.addInputDriver(std::make_shared<SDLInputDriver>(&m_inputController));
@@ -355,13 +951,443 @@ QString Window::getFiltersArchive() const {
 }
 
 void Window::selectROM() {
+	if (blockFlashGBXSaveUploadInProgress()) {
+		return;
+	}
 	QString filename = GBAApp::app()->getOpenFileName(this, tr("Select ROM"), romFilters(true));
 	if (!filename.isEmpty()) {
 		setController(m_manager->loadGame(filename));
 	}
 }
 
+void Window::selectFlashGBXCartridge() {
+	if (blockFlashGBXSaveUploadInProgress()) {
+		return;
+	}
+	if (m_flashgbxBusy) {
+		showFlashGBXOverlayWarning(tr("A cartridge operation is already running."));
+		return;
+	}
+
+	QDialog dialog(this, Qt::Sheet);
+	dialog.setWindowTitle(tr("Load Cartridge"));
+	QFormLayout form(&dialog);
+
+	QWidget modeWidget(&dialog);
+	QHBoxLayout* modeLayout = new QHBoxLayout(&modeWidget);
+	modeLayout->setContentsMargins(0, 0, 0, 0);
+	QRadioButton modeDMG(tr("GB/GBC"), &modeWidget);
+	QRadioButton modeAGB(tr("GBA"), &modeWidget);
+	modeLayout->addWidget(&modeDMG);
+	modeLayout->addWidget(&modeAGB);
+	modeLayout->addStretch(1);
+	QString savedMode = m_config->getQtOption(QStringLiteral("mode"), QStringLiteral("flashgbx")).toString();
+	if (savedMode == QLatin1String("dmg")) {
+		modeDMG.setChecked(true);
+	} else {
+		modeAGB.setChecked(true);
+	}
+
+	QComboBox devicePort(&dialog);
+	devicePort.setEditable(true);
+	auto populateDevicePorts = [&devicePort](const QString& selectedPort) {
+		devicePort.clear();
+		devicePort.addItem(Window::tr("Auto-detect"), QString());
+		for (const QString& port : flashGBXDevicePorts()) {
+			devicePort.addItem(port, port);
+		}
+		if (!selectedPort.isEmpty()) {
+			int portIndex = devicePort.findText(selectedPort);
+			if (portIndex < 0) {
+				devicePort.addItem(selectedPort, selectedPort);
+				portIndex = devicePort.findText(selectedPort);
+			}
+			devicePort.setCurrentIndex(portIndex);
+		}
+	};
+	populateDevicePorts(m_config->getQtOption(QStringLiteral("devicePort"), QStringLiteral("flashgbx")).toString());
+
+	QPushButton detectPorts(tr("Detect"), &dialog);
+	QHBoxLayout* portLayout = new QHBoxLayout;
+	portLayout->addWidget(&devicePort, 1);
+	portLayout->addWidget(&detectPorts);
+	connect(&detectPorts, &QPushButton::clicked, &dialog, [&devicePort, populateDevicePorts]() {
+		const QString selectedPort = devicePort.currentText().trimmed();
+		populateDevicePorts(selectedPort == devicePort.itemText(0) ? QString() : selectedPort);
+	});
+
+	QComboBox flashcartType(&dialog);
+	flashcartType.setEditable(true);
+	flashcartType.addItem(tr("Auto-detect"), QStringLiteral("autodetect"));
+	QString savedFlashcartType = m_config->getQtOption(QStringLiteral("flashcartType"), QStringLiteral("flashgbx")).toString();
+	if (savedFlashcartType.isEmpty()) {
+		savedFlashcartType = QStringLiteral("autodetect");
+	}
+	if (savedFlashcartType == QLatin1String("autodetect")) {
+		flashcartType.setCurrentIndex(0);
+	} else {
+		int portIndex = flashcartType.findText(savedFlashcartType);
+		if (portIndex < 0) {
+			flashcartType.addItem(savedFlashcartType, savedFlashcartType);
+			portIndex = flashcartType.findText(savedFlashcartType);
+		}
+		flashcartType.setCurrentIndex(portIndex);
+	}
+
+	auto setComboByValue = [](QComboBox& combo, const QString& selectedValue) {
+		QString value = selectedValue.trimmed();
+		if (value.isEmpty()) {
+			value = QStringLiteral("auto");
+		}
+		int index = combo.findData(value);
+		if (index < 0) {
+			index = combo.findText(value);
+		}
+		if (index < 0) {
+			combo.addItem(value, value);
+			index = combo.count() - 1;
+		}
+		combo.setCurrentIndex(index);
+	};
+	auto comboValue = [](const QComboBox& combo, const QString& autoDetectLabel, const QString& defaultValue) {
+		const QString text = combo.currentText().trimmed();
+		const int index = combo.currentIndex();
+		if (index >= 0 && text == combo.itemText(index).trimmed()) {
+			const QString value = combo.itemData(index).toString().trimmed();
+			if (!value.isEmpty()) {
+				return value;
+			}
+		}
+		if (text.isEmpty() || text == autoDetectLabel) {
+			return defaultValue;
+		}
+		return text;
+	};
+
+	QComboBox saveType(&dialog);
+	saveType.setEditable(true);
+	auto populateSaveTypes = [&saveType, &setComboByValue, this](bool dmgMode) {
+		saveType.clear();
+		saveType.addItem(tr("Auto-detect"), QStringLiteral("auto"));
+		if (dmgMode) {
+			saveType.addItem(tr("4K SRAM (512 Bytes)"), QStringLiteral("4k"));
+			saveType.addItem(tr("16K SRAM (2 KiB)"), QStringLiteral("16k"));
+			saveType.addItem(tr("64K SRAM (8 KiB)"), QStringLiteral("64k"));
+			saveType.addItem(tr("256K SRAM (32 KiB)"), QStringLiteral("256k"));
+			saveType.addItem(tr("512K SRAM (64 KiB)"), QStringLiteral("512k"));
+			saveType.addItem(tr("1M SRAM (128 KiB)"), QStringLiteral("1m"));
+			saveType.addItem(tr("MBC6 SRAM+FLASH (1.03 MiB)"), QStringLiteral("mbc6"));
+			saveType.addItem(tr("MBC7 2K EEPROM (256 Bytes)"), QStringLiteral("mbc7_2k"));
+			saveType.addItem(tr("MBC7 4K EEPROM (512 Bytes)"), QStringLiteral("mbc7_4k"));
+			saveType.addItem(tr("TAMA5 EEPROM (32 Bytes)"), QStringLiteral("tama5"));
+			saveType.addItem(tr("Unlicensed 4M SRAM (512 KiB)"), QStringLiteral("sram4m"));
+			saveType.addItem(tr("Unlicensed 1M EEPROM (128 KiB)"), QStringLiteral("eeprom1m"));
+			saveType.addItem(tr("Unlicensed Photo! Directory (1 MiB)"), QStringLiteral("photo"));
+			setComboByValue(saveType, m_config->getQtOption(QStringLiteral("dmgSaveType"), QStringLiteral("flashgbx")).toString());
+		} else {
+			saveType.addItem(tr("4K EEPROM (512 Bytes)"), QStringLiteral("eeprom4k"));
+			saveType.addItem(tr("64K EEPROM (8 KiB)"), QStringLiteral("eeprom64k"));
+			saveType.addItem(tr("256K SRAM/FRAM (32 KiB)"), QStringLiteral("sram256k"));
+			saveType.addItem(tr("512K FLASH (64 KiB)"), QStringLiteral("flash512k"));
+			saveType.addItem(tr("1M FLASH (128 KiB)"), QStringLiteral("flash1m"));
+			saveType.addItem(tr("8M DACS (1 MiB)"), QStringLiteral("dacs8m"));
+			saveType.addItem(tr("Unlicensed 512K SRAM (64 KiB)"), QStringLiteral("sram512k"));
+			saveType.addItem(tr("Unlicensed 1M SRAM (128 KiB)"), QStringLiteral("sram1m"));
+			setComboByValue(saveType, m_config->getQtOption(QStringLiteral("agbSaveType"), QStringLiteral("flashgbx")).toString());
+		}
+	};
+	populateSaveTypes(modeDMG.isChecked());
+
+	QComboBox dmgMbc(&dialog);
+	dmgMbc.setEditable(true);
+	dmgMbc.addItem(tr("Auto-detect"), QStringLiteral("auto"));
+	dmgMbc.addItem(tr("None"), QStringLiteral("0x00"));
+	dmgMbc.addItem(tr("MBC1"), QStringLiteral("1"));
+	dmgMbc.addItem(tr("MBC2"), QStringLiteral("2"));
+	dmgMbc.addItem(tr("MBC3 + RTC + SRAM + Battery"), QStringLiteral("0x10"));
+	dmgMbc.addItem(tr("MBC3 + SRAM + Battery"), QStringLiteral("0x13"));
+	dmgMbc.addItem(tr("MBC5"), QStringLiteral("5"));
+	dmgMbc.addItem(tr("MBC5 + SRAM + Battery"), QStringLiteral("0x1B"));
+	dmgMbc.addItem(tr("MBC5 + Rumble + SRAM + Battery"), QStringLiteral("0x1E"));
+	dmgMbc.addItem(tr("MBC6"), QStringLiteral("6"));
+	dmgMbc.addItem(tr("MBC7"), QStringLiteral("7"));
+	dmgMbc.addItem(tr("MBC30 + RTC + SRAM + Battery"), QStringLiteral("0x110"));
+	dmgMbc.addItem(tr("MBC1M"), QStringLiteral("0x101"));
+	dmgMbc.addItem(tr("HuC-1"), QStringLiteral("0xFF"));
+	dmgMbc.addItem(tr("HuC-3"), QStringLiteral("0xFE"));
+	dmgMbc.addItem(tr("TAMA5"), QStringLiteral("0xFD"));
+	setComboByValue(dmgMbc, m_config->getQtOption(QStringLiteral("dmgMbc"), QStringLiteral("flashgbx")).toString());
+	dmgMbc.setEnabled(modeDMG.isChecked());
+	connect(&modeDMG, &QRadioButton::toggled, &dialog, [&populateSaveTypes, &dmgMbc](bool checked) {
+		if (checked) {
+			populateSaveTypes(true);
+		}
+		dmgMbc.setEnabled(checked);
+	});
+	connect(&modeAGB, &QRadioButton::toggled, &dialog, [&populateSaveTypes](bool checked) {
+		if (checked) {
+			populateSaveTypes(false);
+		}
+	});
+
+	QCheckBox autoUpload(tr("Upload save changes to the cartridge automatically"), &dialog);
+	QVariant savedAutoUpload = m_config->getQtOption(QStringLiteral("autoUpload"), QStringLiteral("flashgbx"));
+	autoUpload.setChecked(savedAutoUpload.isNull() ? true : savedAutoUpload.toBool());
+
+	form.addRow(tr("Cartridge type:"), &modeWidget);
+	form.addRow(tr("Serial port:"), portLayout);
+	form.addRow(tr("Cartridge profile:"), &flashcartType);
+	form.addRow(tr("Save type:"), &saveType);
+	form.addRow(tr("GB/GBC memory controller:"), &dmgMbc);
+	form.addRow(QString(), &autoUpload);
+
+	QLabel hint(tr("The cartridge reader is bundled with mGBA. Port auto-detect leaves the serial port unset; cartridge profile auto-detect uses the reader's autodetect mode. If save detection is unstable, choose the cartridge's exact save type."), &dialog);
+	hint.setWordWrap(true);
+	form.addRow(&hint);
+
+	QDialogButtonBox buttons(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+	form.addRow(&buttons);
+	connect(&buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+	connect(&buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+
+	if (dialog.exec() != QDialog::Accepted) {
+		return;
+	}
+
+	const QString flashgbxCommand = defaultFlashGBXCommand();
+	const QString cartridgeMode = modeDMG.isChecked() ? QStringLiteral("dmg") : QStringLiteral("agb");
+	const QString autoDetectLabel = tr("Auto-detect");
+	QString port = devicePort.currentText().trimmed();
+	if (port == autoDetectLabel) {
+		port.clear();
+	}
+	QString flashcartTypeName = flashcartType.currentText().trimmed();
+	if (flashcartTypeName.isEmpty() || flashcartTypeName == autoDetectLabel) {
+		flashcartTypeName = QStringLiteral("autodetect");
+	}
+	const QString saveTypeName = comboValue(saveType, autoDetectLabel, QStringLiteral("auto"));
+	const QString dmgMbcName = comboValue(dmgMbc, autoDetectLabel, QStringLiteral("auto"));
+	const bool autoUploadEnabled = autoUpload.isChecked();
+
+	m_config->setQtOption(QStringLiteral("mode"), cartridgeMode, QStringLiteral("flashgbx"));
+	m_config->setQtOption(QStringLiteral("devicePort"), port, QStringLiteral("flashgbx"));
+	m_config->setQtOption(QStringLiteral("flashcartType"), flashcartTypeName, QStringLiteral("flashgbx"));
+	m_config->setQtOption(cartridgeMode == QLatin1String("dmg") ? QStringLiteral("dmgSaveType") : QStringLiteral("agbSaveType"), saveTypeName, QStringLiteral("flashgbx"));
+	m_config->setQtOption(QStringLiteral("dmgMbc"), dmgMbcName, QStringLiteral("flashgbx"));
+	m_config->setQtOption(QStringLiteral("autoUpload"), autoUploadEnabled, QStringLiteral("flashgbx"));
+	m_config->write();
+
+	if (flashgbxCommand.isEmpty()) {
+		showFlashGBXOverlayWarning(tr("The embedded cartridge reader could not be found."));
+		return;
+	}
+
+	QProgressDialog* progress = new QProgressDialog(tr("Reading cartridge..."), QString(), 0, 0, this, Qt::Sheet);
+	progress->setCancelButton(nullptr);
+	progress->setWindowModality(Qt::WindowModal);
+	progress->setAttribute(Qt::WA_DeleteOnClose);
+	progress->show();
+
+	m_flashgbxBusy = true;
+	auto result = std::make_shared<FlashGBXLoadResult>();
+	GBAApp::app()->submitWorkerJob([result, flashgbxCommand, cartridgeMode, port, flashcartTypeName, saveTypeName, dmgMbcName]() {
+		QStringList baseCommand = splitCommandLine(flashgbxCommand);
+		if (baseCommand.isEmpty()) {
+			result->error = QObject::tr("The embedded cartridge reader could not be started.");
+			return;
+		}
+
+		QStringList extraArgs;
+		if (!port.isEmpty()) {
+			extraArgs << QStringLiteral("--device-port") << port;
+		}
+		if (cartridgeMode == QLatin1String("dmg")) {
+			extraArgs << QStringLiteral("--dmg-savetype") << (saveTypeName.isEmpty() ? QStringLiteral("auto") : saveTypeName);
+			extraArgs << QStringLiteral("--dmg-mbc") << (dmgMbcName.isEmpty() ? QStringLiteral("auto") : dmgMbcName);
+		} else {
+			extraArgs << QStringLiteral("--agb-savetype") << (saveTypeName.isEmpty() ? QStringLiteral("auto") : saveTypeName);
+		}
+		extraArgs << QStringLiteral("--flashcart-type") << (flashcartTypeName.isEmpty() ? QStringLiteral("autodetect") : flashcartTypeName);
+
+		const QString suffix = cartridgeMode == QLatin1String("dmg") ? QStringLiteral("gb") : QStringLiteral("gba");
+		const QString sessionRoot = QDir(ConfigController::configDir()).filePath(QStringLiteral("CartridgeReader"));
+		const QString sessionName = QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd-hhmmss"));
+		const QString sessionDir = QDir(sessionRoot).filePath(sessionName);
+		QDir().mkpath(sessionDir);
+
+		result->mode = cartridgeMode;
+		result->sessionDir = sessionDir;
+		result->romPath = QDir(sessionDir).filePath(QStringLiteral("cart.") + suffix);
+		result->savePath = savePathForRomPath(result->romPath);
+		result->initialSavePath = QDir(sessionDir).filePath(QStringLiteral("cart.initial.sav"));
+		const QString verifySavePath = QDir(sessionDir).filePath(QStringLiteral("cart.verify.sav"));
+		result->flashcartType = flashcartTypeName;
+		result->saveType = saveTypeName;
+		result->dmgMbc = cartridgeMode == QLatin1String("dmg") ? dmgMbcName : QString();
+		result->restoreCommand = buildFlashGBXCommand(baseCommand, cartridgeMode, QStringLiteral("restore-save"), result->savePath, extraArgs);
+
+		QString combinedOutput;
+		QStringList infoCommand = buildFlashGBXCommand(baseCommand, cartridgeMode, QStringLiteral("info"), QStringLiteral("auto"), extraArgs);
+		FlashGBXProcessResult infoResult = runProcess(infoCommand);
+		appendProcessOutput(&combinedOutput, QStringLiteral("info"), infoResult);
+		result->preloadWarning = flashGBXRtcBatteryWarning(infoResult.output, cartridgeMode, dmgMbcName);
+
+		QFile::remove(result->savePath);
+		QFile::remove(verifySavePath);
+		QStringList backupSave = buildFlashGBXCommand(baseCommand, cartridgeMode, QStringLiteral("backup-save"), result->savePath, extraArgs);
+		FlashGBXProcessResult backupSaveResult = runProcess(backupSave);
+		appendProcessOutput(&combinedOutput, QStringLiteral("backup-save"), backupSaveResult);
+		if (result->preloadWarning.isEmpty()) {
+			result->preloadWarning = flashGBXRtcBatteryWarning(backupSaveResult.output, cartridgeMode, dmgMbcName);
+		}
+		if (!flashGBXActionSucceeded(QStringLiteral("backup-save"), backupSaveResult, result->savePath)) {
+			result->error = QObject::tr("Could not back up the cartridge save data. The ROM was not loaded to avoid starting without the cartridge save.");
+			result->output = combinedOutput;
+			return;
+		}
+		const QFileInfo saveInfo(result->savePath);
+		const QString saveHash = fileSha256(result->savePath);
+		if (!saveInfo.exists() || saveInfo.size() <= 0 || saveHash.isEmpty()) {
+			result->error = QObject::tr("Cartridge save data could not be read. The ROM was not loaded.");
+			result->output = combinedOutput;
+			return;
+		}
+
+		QStringList verifySave = buildFlashGBXCommand(baseCommand, cartridgeMode, QStringLiteral("backup-save"), verifySavePath, extraArgs);
+		FlashGBXProcessResult verifySaveResult = runProcess(verifySave);
+		appendProcessOutput(&combinedOutput, QStringLiteral("verify-save"), verifySaveResult);
+		if (result->preloadWarning.isEmpty()) {
+			result->preloadWarning = flashGBXRtcBatteryWarning(verifySaveResult.output, cartridgeMode, dmgMbcName);
+		}
+		const QString verifySaveHash = fileSha256(verifySavePath);
+		if (!flashGBXActionSucceeded(QStringLiteral("backup-save"), verifySaveResult, verifySavePath) ||
+		    verifySaveHash.isEmpty() || verifySaveHash != saveHash) {
+			if (!combinedOutput.isEmpty()) {
+				combinedOutput.append(QLatin1Char('\n'));
+			}
+			combinedOutput.append(QObject::tr("Initial save SHA-256: %1\nVerified save SHA-256: %2")
+			                      .arg(saveHash, verifySaveHash.isEmpty() ? QObject::tr("(unreadable)") : verifySaveHash));
+			result->error = QObject::tr("Cartridge save data could not be verified. The ROM was not loaded.");
+			result->output = combinedOutput;
+			return;
+		}
+
+		QFile::remove(result->initialSavePath);
+		if (!QFile::copy(result->savePath, result->initialSavePath)) {
+			result->error = QObject::tr("Could not preserve the verified cartridge save backup. The ROM was not loaded.");
+			result->output = combinedOutput;
+			return;
+		}
+		QFile::remove(verifySavePath);
+		result->initialSaveHash = saveHash;
+		result->savePayloadSize = saveInfo.size();
+		result->saveUploadArmed = true;
+		result->saveBackedUp = true;
+
+		QStringList backupRom = buildFlashGBXCommand(baseCommand, cartridgeMode, QStringLiteral("backup-rom"), result->romPath, extraArgs);
+		FlashGBXProcessResult backupRomResult = runProcess(backupRom);
+		appendProcessOutput(&combinedOutput, QStringLiteral("backup-rom"), backupRomResult);
+		if (result->preloadWarning.isEmpty()) {
+			result->preloadWarning = flashGBXRtcBatteryWarning(backupRomResult.output, cartridgeMode, dmgMbcName);
+		}
+		QString romRejectReason;
+		if (!flashGBXActionSucceeded(QStringLiteral("backup-rom"), backupRomResult, result->romPath, cartridgeMode, &romRejectReason)) {
+			if (!romRejectReason.isEmpty()) {
+				if (!combinedOutput.isEmpty()) {
+					combinedOutput.append(QLatin1Char('\n'));
+				}
+				combinedOutput.append(romRejectReason);
+				result->error = QObject::tr("No valid cartridge ROM was detected. Make sure the cartridge is inserted correctly.");
+			} else {
+				result->error = QObject::tr("Could not back up the cartridge ROM.");
+			}
+			result->output = combinedOutput;
+			return;
+		}
+
+		result->output = combinedOutput;
+		result->success = true;
+	}, this, [this, progress, result, autoUploadEnabled]() {
+		m_flashgbxBusy = false;
+		progress->close();
+		progress->deleteLater();
+
+		if (!result->success) {
+			showFlashGBXOverlayWarning(result->error.isEmpty() ? tr("Cartridge read failed.") : result->error);
+			return;
+		}
+
+		const QString rtcWarningKey = cartridgeRtcWarningKeyForRom(result->romPath, result->mode);
+		if (!rtcWarningKey.isEmpty()) {
+			QStringList warnedCartridges = m_config->getQtOption(QStringLiteral("rtcWarningCartridges"), QStringLiteral("flashgbx")).toStringList();
+			if (result->preloadWarning.isEmpty() && warnedCartridges.contains(rtcWarningKey)) {
+				result->preloadWarning = rememberedFlashGBXRtcBatteryWarning();
+			}
+			if (!result->preloadWarning.isEmpty() && !warnedCartridges.contains(rtcWarningKey)) {
+				warnedCartridges.append(rtcWarningKey);
+				m_config->setQtOption(QStringLiteral("rtcWarningCartridges"), warnedCartridges, QStringLiteral("flashgbx"));
+				m_config->write();
+			}
+		}
+
+		if (!result->preloadWarning.isEmpty() && !confirmFlashGBXOverlayWarning(result->preloadWarning)) {
+			QFile::remove(result->romPath);
+			QFile::remove(result->savePath);
+			QFile::remove(result->initialSavePath);
+			QFile::remove(QDir(result->sessionDir).filePath(QStringLiteral("cart.verify.sav")));
+			QFile::remove(QDir(result->sessionDir).filePath(QStringLiteral("cart.upload.sav")));
+			QDir parentDir(QFileInfo(result->sessionDir).dir());
+			parentDir.rmdir(QFileInfo(result->sessionDir).fileName());
+			showFlashGBXOverlayWarning(tr("Cartridge load canceled."));
+			return;
+		}
+
+		auto session = std::make_unique<FlashGBXSession>();
+		session->mode = result->mode;
+		session->sessionDir = result->sessionDir;
+		session->romPath = result->romPath;
+		session->savePath = result->savePath;
+		session->initialSavePath = result->initialSavePath;
+		session->initialSaveHash = result->initialSaveHash;
+		session->savePayloadSize = result->savePayloadSize;
+		session->flashcartType = result->flashcartType;
+		session->saveType = result->saveType;
+		session->dmgMbc = result->dmgMbc;
+		session->preloadWarning = result->preloadWarning;
+		session->restoreCommand = result->restoreCommand;
+		session->saveUploadArmed = result->saveUploadArmed;
+		m_flashgbxSession = std::move(session);
+		m_flashgbxQueuedSaveHash.clear();
+		m_flashgbxUploadingSaveHash.clear();
+		writeFlashGBXManifest(QStringLiteral("loaded"));
+
+		if (autoUploadEnabled && result->saveUploadArmed) {
+			configureFlashGBXSaveWatcher();
+		} else {
+			m_flashgbxSaveWatcher.removePaths(m_flashgbxSaveWatcher.files());
+			m_flashgbxSaveWatcher.removePaths(m_flashgbxSaveWatcher.directories());
+		}
+
+		m_flashgbxUseSoftwareDisplay = true;
+		CoreController* controller = m_manager->loadGame(result->romPath, result->savePath);
+		if (!controller) {
+			m_flashgbxUseSoftwareDisplay = false;
+			writeFlashGBXManifest(QStringLiteral("load-save-failed"));
+			m_flashgbxSession.reset();
+			showFlashGBXOverlayWarning(tr("Cartridge save data could not be loaded into the emulator. The ROM was not started."));
+			return;
+		}
+		setController(controller);
+		if (!result->saveUploadArmed) {
+			showFlashGBXOverlayWarning(tr("ROM was loaded, but cartridge save data was not safely backed up. Save upload is disabled for this session, and the local save file will be kept."));
+		}
+	});
+}
+
 void Window::bootBIOS() {
+	if (blockFlashGBXSaveUploadInProgress()) {
+		return;
+	}
 	QString bios(m_config->getOption("gba.bios"));
 	if (bios.isEmpty()) {
 		bios = m_config->getOption("bios");
@@ -371,6 +1397,9 @@ void Window::bootBIOS() {
 
 #ifdef USE_SQLITE3
 void Window::selectROMInArchive() {
+	if (blockFlashGBXSaveUploadInProgress()) {
+		return;
+	}
 	QString filename = GBAApp::app()->getOpenFileName(this, tr("Select ROM"), getFiltersArchive());
 	if (filename.isEmpty()) {
 		return;
@@ -398,6 +1427,9 @@ void Window::addDirToLibrary() {
 #endif
 
 void Window::replaceROM() {
+	if (blockFlashGBXCartridgeRestrictedAction()) {
+		return;
+	}
 	QString filename = GBAApp::app()->getOpenFileName(this, tr("Select ROM"), romFilters());
 	if (!filename.isEmpty()) {
 		m_controller->replaceGame(filename);
@@ -405,6 +1437,9 @@ void Window::replaceROM() {
 }
 
 void Window::selectSave(bool temporary) {
+	if (blockFlashGBXCartridgeRestrictedAction()) {
+		return;
+	}
 	QStringList formats{"*.sav"};
 	QString filter = tr("Save games (%1)").arg(formats.join(QChar(' ')));
 	QString filename = GBAApp::app()->getOpenFileName(this, tr("Select save game"), filter);
@@ -414,6 +1449,9 @@ void Window::selectSave(bool temporary) {
 }
 
 void Window::selectState(bool load) {
+	if (blockFlashGBXCartridgeRestrictedAction()) {
+		return;
+	}
 	QStringList formats{"*.ss0", "*.ss1", "*.ss2", "*.ss3", "*.ss4", "*.ss5", "*.ss6", "*.ss7", "*.ss8", "*.ss9"};
 	QString filter = tr("mGBA save state files (%1)").arg(formats.join(QChar(' ')));
 	if (load) {
@@ -442,9 +1480,13 @@ void Window::multiplayerChanged() {
 	for (auto& action : m_nonMpActions) {
 		action->setEnabled(attached < 2);
 	}
+	updateFlashGBXRestrictedActions();
 }
 
 void Window::selectPatch() {
+	if (blockFlashGBXCartridgeRestrictedAction()) {
+		return;
+	}
 	QString filename = GBAApp::app()->getOpenFileName(this, tr("Select patch"), tr("Patches (*.ips *.ups *.bps)"));
 	if (!filename.isEmpty()) {
 		if (m_controller) {
@@ -512,6 +1554,486 @@ void Window::parseCard() {
 #endif
 }
 
+void Window::configureFlashGBXSaveWatcher() {
+	if (!m_flashgbxSaveWatcher.files().isEmpty()) {
+		m_flashgbxSaveWatcher.removePaths(m_flashgbxSaveWatcher.files());
+	}
+	if (!m_flashgbxSaveWatcher.directories().isEmpty()) {
+		m_flashgbxSaveWatcher.removePaths(m_flashgbxSaveWatcher.directories());
+	}
+	if (!m_flashgbxSession) {
+		return;
+	}
+	if (QFileInfo::exists(m_flashgbxSession->savePath)) {
+		m_flashgbxSaveWatcher.addPath(m_flashgbxSession->savePath);
+	}
+}
+
+void Window::scheduleFlashGBXSaveUpload() {
+	if (!m_flashgbxSession) {
+		return;
+	}
+	if (!m_flashgbxSession->saveUploadArmed) {
+		return;
+	}
+	if (!m_config->getQtOption(QStringLiteral("autoUpload"), QStringLiteral("flashgbx")).toBool()) {
+		return;
+	}
+	const QString saveHash = fileSha256Prefix(m_flashgbxSession->savePath, m_flashgbxSession->savePayloadSize);
+	if (saveHash.isEmpty() || saveHash == m_flashgbxSession->initialSaveHash ||
+	    saveHash == m_flashgbxUploadingSaveHash || saveHash == m_flashgbxQueuedSaveHash) {
+		return;
+	}
+	m_flashgbxQueuedSaveHash = saveHash;
+	m_flashgbxSaveUploadTimer.start();
+}
+
+bool Window::uploadFlashGBXSave(bool force) {
+	if (!m_flashgbxSession) {
+		if (force) {
+			showFlashGBXOverlayWarning(tr("Load a cartridge first."));
+		}
+		return false;
+	}
+	if (!m_flashgbxSession->saveUploadArmed) {
+		if (force) {
+			showFlashGBXOverlayWarning(tr("Cartridge save data was not safely backed up, so mGBA will not write this session's save data back to the cartridge. The local save file was kept:\n%1")
+			                           .arg(m_flashgbxSession->savePath));
+		}
+		return false;
+	}
+	if (!QFileInfo::exists(m_flashgbxSession->savePath)) {
+		if (force) {
+			showFlashGBXOverlayWarning(tr("No save file exists yet for this cartridge session."));
+		}
+		return false;
+	}
+
+	const QString saveHash = fileSha256Prefix(m_flashgbxSession->savePath, m_flashgbxSession->savePayloadSize);
+	if (saveHash.isEmpty()) {
+		if (force) {
+			showFlashGBXOverlayWarning(tr("Could not read the save file."));
+		}
+		return false;
+	}
+	if (!force && saveHash == m_flashgbxSession->initialSaveHash) {
+		if (m_flashgbxQueuedSaveHash == saveHash) {
+			m_flashgbxQueuedSaveHash.clear();
+		}
+		return false;
+	}
+	if (!force && saveHash == m_flashgbxUploadingSaveHash) {
+		return false;
+	}
+	if (m_flashgbxBusy) {
+		m_flashgbxUploadPending = true;
+		if (!force) {
+			m_flashgbxQueuedSaveHash = saveHash;
+		}
+		return true;
+	}
+
+	m_flashgbxUploadingSaveHash = saveHash;
+	m_flashgbxQueuedSaveHash.clear();
+	m_flashgbxBusy = true;
+	m_flashgbxSaveUploadBusy = true;
+	updateFlashGBXSaveUploadActions();
+	updateTitle();
+	auto result = std::make_shared<FlashGBXUploadResult>();
+	QStringList restoreCommand = m_flashgbxSession->restoreCommand;
+	const QString verifyPath = QDir(m_flashgbxSession->sessionDir).filePath(QStringLiteral("cart.verify.sav"));
+	const QString uploadPath = QDir(m_flashgbxSession->sessionDir).filePath(QStringLiteral("cart.upload.sav"));
+	if (!restoreCommand.isEmpty()) {
+		restoreCommand.last() = uploadPath;
+	}
+	const QString savePath = m_flashgbxSession->savePath;
+	const qint64 savePayloadSize = m_flashgbxSession->savePayloadSize;
+	GBAApp::app()->submitWorkerJob([result, restoreCommand, savePath, savePayloadSize, saveHash, verifyPath, uploadPath]() {
+		QFile::remove(uploadPath);
+		if (!copyFilePrefix(savePath, uploadPath, savePayloadSize)) {
+			QFile::remove(uploadPath);
+			result->error = QObject::tr("Could not read the save file.");
+			result->output = QString();
+			return;
+		}
+		FlashGBXProcessResult restoreResult = runProcess(restoreCommand);
+		QString combinedOutput;
+		appendProcessOutput(&combinedOutput, QStringLiteral("restore-save"), restoreResult);
+		result->saveHash = saveHash;
+		result->verifyPath = verifyPath;
+		result->success = flashGBXActionSucceeded(QStringLiteral("restore-save"), restoreResult, restoreCommand.last());
+		if (!result->success) {
+			QFile::remove(uploadPath);
+			result->error = QObject::tr("Could not restore the save data to the cartridge.");
+			result->output = combinedOutput;
+			return;
+		}
+
+		QFile::remove(verifyPath);
+		QStringList verifyCommand = restoreCommand;
+		for (int i = 0; i + 1 < verifyCommand.size(); ++i) {
+			if (verifyCommand.at(i) == QLatin1String("--action")) {
+				verifyCommand[i + 1] = QStringLiteral("backup-save");
+				break;
+			}
+		}
+		if (!verifyCommand.isEmpty()) {
+			verifyCommand.last() = verifyPath;
+		}
+
+		FlashGBXProcessResult verifyResult = runProcess(verifyCommand);
+		appendProcessOutput(&combinedOutput, QStringLiteral("verify-save"), verifyResult);
+		result->verifyHash = fileSha256(verifyPath);
+		result->success = flashGBXActionSucceeded(QStringLiteral("backup-save"), verifyResult, verifyPath) && result->verifyHash == saveHash;
+		if (!result->success) {
+			if (!combinedOutput.isEmpty()) {
+				combinedOutput.append(QLatin1Char('\n'));
+			}
+			combinedOutput.append(QObject::tr("Expected save SHA-256: %1\nRead-back save SHA-256: %2")
+			                      .arg(saveHash, result->verifyHash.isEmpty() ? QObject::tr("(unreadable)") : result->verifyHash));
+			result->error = QObject::tr("The save data was written, but reading it back from the cartridge did not match. The cartridge save was not marked as restored.");
+		} else {
+			QFile::remove(verifyPath);
+		}
+		QFile::remove(uploadPath);
+		result->output = combinedOutput;
+	}, this, [this, result, force]() {
+		m_flashgbxBusy = false;
+		m_flashgbxSaveUploadBusy = false;
+		updateFlashGBXSaveUploadActions();
+		updateTitle();
+		m_flashgbxUploadingSaveHash.clear();
+		if (!m_flashgbxSession) {
+			m_flashgbxQueuedSaveHash.clear();
+			return;
+		}
+		if (result->success) {
+			m_flashgbxSession->initialSaveHash = result->saveHash;
+			if (m_flashgbxQueuedSaveHash == result->saveHash) {
+				m_flashgbxQueuedSaveHash.clear();
+			}
+			writeFlashGBXManifest(QStringLiteral("restored"));
+			if (!isFlashGBXCartridgeActive()) {
+				cleanupFlashGBXSessionTempFiles(true);
+			}
+			if (force) {
+				showFlashGBXOverlayWarning(tr("Save data was uploaded to the cartridge."));
+			}
+			if (m_flashgbxCloseAfterUpload) {
+				m_flashgbxCloseAfterUpload = false;
+				QTimer::singleShot(0, this, &Window::close);
+				return;
+			}
+		} else {
+			if (m_flashgbxQueuedSaveHash == result->saveHash) {
+				m_flashgbxQueuedSaveHash.clear();
+			}
+			writeFlashGBXManifest(QStringLiteral("restore-failed"));
+			showFlashGBXOverlayWarning(tr("%1\n\nThe save file was kept for manual restore:\n%2")
+			                           .arg(result->error.isEmpty() ? tr("Could not restore the save data to the cartridge.") : result->error,
+			                                m_flashgbxSession->savePath));
+			if (m_flashgbxCloseAfterUpload) {
+				m_flashgbxCloseAfterUpload = false;
+				m_pendingClose = false;
+			}
+		}
+		configureFlashGBXSaveWatcher();
+		if (m_flashgbxUploadPending) {
+			m_flashgbxUploadPending = false;
+			scheduleFlashGBXSaveUpload();
+		}
+	});
+	return true;
+}
+
+void Window::restoreFlashGBXSave() {
+	uploadFlashGBXSave(true);
+}
+
+void Window::writeFlashGBXManifest(const QString& restoreStatus) {
+	if (!m_flashgbxSession) {
+		return;
+	}
+
+	QJsonObject manifest;
+	manifest.insert(QStringLiteral("mode"), m_flashgbxSession->mode);
+	manifest.insert(QStringLiteral("flashcart_type"), m_flashgbxSession->flashcartType);
+	manifest.insert(QStringLiteral("save_type"), m_flashgbxSession->saveType);
+	manifest.insert(QStringLiteral("dmg_mbc"), m_flashgbxSession->dmgMbc);
+	manifest.insert(QStringLiteral("preload_warning"), m_flashgbxSession->preloadWarning);
+	manifest.insert(QStringLiteral("rom_path"), m_flashgbxSession->romPath);
+	manifest.insert(QStringLiteral("save_path"), m_flashgbxSession->savePath);
+	manifest.insert(QStringLiteral("initial_save_path"), QFileInfo::exists(m_flashgbxSession->initialSavePath) ? m_flashgbxSession->initialSavePath : QString());
+	manifest.insert(QStringLiteral("save_upload_armed"), m_flashgbxSession->saveUploadArmed);
+	manifest.insert(QStringLiteral("initial_save_sha256"), m_flashgbxSession->initialSaveHash);
+	manifest.insert(QStringLiteral("save_payload_size"), m_flashgbxSession->savePayloadSize);
+	manifest.insert(QStringLiteral("restore_status"), restoreStatus);
+
+	QFile manifestFile(QDir(m_flashgbxSession->sessionDir).filePath(QStringLiteral("cartridge-session.json")));
+	if (manifestFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+		manifestFile.write(QJsonDocument(manifest).toJson(QJsonDocument::Indented));
+	}
+}
+
+void Window::cleanupFlashGBXSessionTempFiles(bool removeSave) {
+	if (!m_flashgbxSession) {
+		return;
+	}
+	QFile::remove(m_flashgbxSession->romPath);
+	QFile::remove(m_flashgbxSession->initialSavePath);
+	QFile::remove(QDir(m_flashgbxSession->sessionDir).filePath(QStringLiteral("cart.verify.sav")));
+	QFile::remove(QDir(m_flashgbxSession->sessionDir).filePath(QStringLiteral("cart.upload.sav")));
+	if (removeSave) {
+		QFile::remove(m_flashgbxSession->savePath);
+	}
+}
+
+bool Window::isFlashGBXCartridgeActive() const {
+	if (!m_controller || !m_flashgbxSession) {
+		return false;
+	}
+
+	QFileInfo expectedInfo(m_flashgbxSession->romPath);
+	QString expectedPath = expectedInfo.canonicalFilePath();
+	if (expectedPath.isEmpty()) {
+		expectedPath = expectedInfo.absoluteFilePath();
+	}
+
+	const QString controllerPath = m_controller->path();
+	const QString controllerBase = m_controller->baseDirectory();
+	QFileInfo currentInfo(controllerBase.isEmpty() ? controllerPath : QDir(controllerBase).filePath(controllerPath));
+	QString currentPath = currentInfo.canonicalFilePath();
+	if (currentPath.isEmpty()) {
+		currentPath = currentInfo.absoluteFilePath();
+	}
+
+	return !expectedPath.isEmpty() && expectedPath == currentPath;
+}
+
+bool Window::blockFlashGBXCartridgeRestrictedAction() {
+	if (!isFlashGBXCartridgeActive()) {
+		return false;
+	}
+	showFlashGBXOverlayWarning(tr("This feature is disabled while a cartridge is loaded."));
+	return true;
+}
+
+bool Window::blockFlashGBXSaveUploadInProgress() {
+	if (!m_flashgbxSaveUploadBusy) {
+		return false;
+	}
+	showFlashGBXOverlayWarning(tr("Save data is being written to the cartridge. Wait until it finishes before resetting or closing mGBA."));
+	return true;
+}
+
+void Window::showFlashGBXOverlayWarning(const QString& message) {
+	if (message.isEmpty()) {
+		return;
+	}
+
+	if (m_display) {
+		m_display->showMessage(message);
+	}
+
+	QWidget* anchor = centralWidget() ? centralWidget() : this;
+	QRect anchorRect = anchor == this ? rect() : anchor->geometry();
+	if (!anchorRect.isValid()) {
+		anchorRect = rect();
+	}
+
+	QLabel* overlay = new QLabel(message, this);
+	overlay->setObjectName(QStringLiteral("flashgbxOverlayWarning"));
+	overlay->setAttribute(Qt::WA_DeleteOnClose);
+	overlay->setAttribute(Qt::WA_TransparentForMouseEvents);
+	overlay->setAlignment(Qt::AlignCenter);
+	overlay->setWordWrap(true);
+	overlay->setStyleSheet(QStringLiteral(
+	    "QLabel#flashgbxOverlayWarning {"
+	    "background-color: rgba(20, 22, 26, 230);"
+	    "color: white;"
+	    "border: 1px solid rgba(255, 255, 255, 90);"
+	    "border-radius: 6px;"
+	    "padding: 10px 14px;"
+	    "}"));
+
+	const int maxWidth = qMax(120, anchorRect.width() - 24);
+	const int minWidth = qMin(maxWidth, 280);
+	overlay->setMaximumWidth(maxWidth);
+	overlay->adjustSize();
+	const QSize hint = overlay->sizeHint();
+	const int overlayWidth = qBound(minWidth, hint.width(), maxWidth);
+	overlay->setFixedWidth(overlayWidth);
+	overlay->adjustSize();
+	const int maxHeight = qMax(64, anchorRect.height() - 32);
+	const int overlayHeight = qMin(overlay->sizeHint().height(), maxHeight);
+	const int overlayX = qMax(anchorRect.x() + 12, anchorRect.x() + (anchorRect.width() - overlayWidth) / 2);
+	const int overlayY = anchorRect.y() + qMax(16, anchorRect.height() / 12);
+	overlay->setGeometry(overlayX, overlayY, overlayWidth, overlayHeight);
+	overlay->raise();
+	overlay->show();
+	QTimer::singleShot(6500, overlay, &QLabel::close);
+}
+
+bool Window::confirmFlashGBXOverlayWarning(const QString& message) {
+	if (message.isEmpty()) {
+		return true;
+	}
+
+	if (m_display) {
+		m_display->showMessage(message);
+	}
+
+	QWidget* anchor = centralWidget() ? centralWidget() : this;
+	QRect anchorRect = anchor == this ? rect() : anchor->rect();
+	if (!anchorRect.isValid()) {
+		anchorRect = rect();
+	}
+
+	QDialog dialog(this);
+	dialog.setObjectName(QStringLiteral("flashgbxOverlayPrompt"));
+	dialog.setWindowFlags(Qt::Dialog | Qt::FramelessWindowHint);
+	dialog.setWindowModality(Qt::WindowModal);
+	dialog.setStyleSheet(QStringLiteral(
+	    "QDialog#flashgbxOverlayPrompt {"
+	    "background-color: rgba(20, 22, 26, 245);"
+	    "color: white;"
+	    "border: 1px solid rgba(255, 255, 255, 110);"
+	    "border-radius: 6px;"
+	    "}"
+	    "QLabel { color: white; }"
+	    "QPushButton { padding: 6px 14px; min-width: 84px; }"));
+
+	QVBoxLayout layout(&dialog);
+	layout.setContentsMargins(18, 16, 18, 14);
+	layout.setSpacing(12);
+	QScrollArea scroll(&dialog);
+	scroll.setWidgetResizable(true);
+	scroll.setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+	scroll.setStyleSheet(QStringLiteral("QScrollArea { border: none; background: transparent; }"));
+	QWidget* messageWidget = new QWidget(&scroll);
+	QVBoxLayout* messageLayout = new QVBoxLayout(messageWidget);
+	messageLayout->setContentsMargins(0, 0, 0, 0);
+	QLabel* label = new QLabel(message, messageWidget);
+	label->setWordWrap(true);
+	label->setAlignment(Qt::AlignCenter);
+	messageLayout->addWidget(label);
+	scroll.setWidget(messageWidget);
+	layout.addWidget(&scroll);
+
+	QDialogButtonBox buttons(&dialog);
+	QPushButton* loadButton = buttons.addButton(tr("Load Anyway"), QDialogButtonBox::AcceptRole);
+	QPushButton* cancelButton = buttons.addButton(tr("Cancel"), QDialogButtonBox::RejectRole);
+	loadButton->setDefault(true);
+	cancelButton->setAutoDefault(false);
+	layout.addWidget(&buttons);
+
+	connect(&buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+	connect(&buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+
+	QRect availableRect = screen() ? screen()->availableGeometry() : QRect();
+	if (!availableRect.isValid()) {
+		availableRect = QRect(QPoint(0, 0), QSize(qMax(640, anchorRect.width()), qMax(480, anchorRect.height())));
+	}
+	const int maxWidth = qMax(360, qMin(anchorRect.width() - 32, availableRect.width() - 80));
+	const int promptWidth = qBound(360, maxWidth, 720);
+	scroll.setMaximumHeight(qMax(180, qMin(availableRect.height() - 180, 460)));
+	dialog.setFixedWidth(promptWidth);
+	dialog.adjustSize();
+	const QPoint center = anchor->mapToGlobal(anchorRect.center());
+	dialog.move(center.x() - dialog.width() / 2, center.y() - dialog.height() / 2);
+	return dialog.exec() == QDialog::Accepted;
+}
+
+void Window::loadFlashGBXSafeState(int slot) {
+	if (!m_controller) {
+		return;
+	}
+	if (!isFlashGBXCartridgeActive()) {
+		m_controller->loadState(slot);
+		return;
+	}
+
+	int flags = m_config->getOption(QStringLiteral("loadStateExtdata"), SAVESTATE_SCREENSHOT | SAVESTATE_RTC).toInt();
+	flags &= ~SAVESTATE_SAVEDATA;
+	m_controller->loadState(slot, flags);
+}
+
+void Window::restrictFlashGBXAction(const std::shared_ptr<Action>& action) {
+	if (!action) {
+		return;
+	}
+	m_flashgbxRestrictedActions.append(action);
+	updateFlashGBXRestrictedActions();
+}
+
+void Window::updateFlashGBXRestrictedActions() {
+	const bool active = isFlashGBXCartridgeActive();
+	if (!active && !m_flashgbxRestrictionsActive) {
+		return;
+	}
+
+	if (!active) {
+		for (auto iter = m_flashgbxRestrictedActionStates.begin(); iter != m_flashgbxRestrictedActionStates.end(); ++iter) {
+			if (iter.key()) {
+				iter.key()->setEnabled(iter.value());
+			}
+		}
+		m_flashgbxRestrictedActionStates.clear();
+		m_flashgbxRestrictionsActive = false;
+		return;
+	}
+
+	m_flashgbxRestrictionsActive = true;
+	for (auto& action : m_flashgbxRestrictedActions) {
+		if (!action) {
+			continue;
+		}
+		Action* rawAction = action.get();
+		if (!m_flashgbxRestrictedActionStates.contains(rawAction)) {
+			m_flashgbxRestrictedActionStates.insert(rawAction, rawAction->isEnabled());
+		}
+		rawAction->setEnabled(false);
+	}
+}
+
+void Window::blockFlashGBXSaveUploadAction(const std::shared_ptr<Action>& action) {
+	if (!action) {
+		return;
+	}
+	m_flashgbxSaveUploadBlockedActions.append(action);
+	updateFlashGBXSaveUploadActions();
+}
+
+void Window::updateFlashGBXSaveUploadActions() {
+	if (!m_flashgbxSaveUploadBusy && !m_flashgbxSaveUploadActionsBlocked) {
+		return;
+	}
+
+	if (!m_flashgbxSaveUploadBusy) {
+		for (auto iter = m_flashgbxSaveUploadActionStates.begin(); iter != m_flashgbxSaveUploadActionStates.end(); ++iter) {
+			if (iter.key()) {
+				iter.key()->setEnabled(iter.value());
+			}
+		}
+		m_flashgbxSaveUploadActionStates.clear();
+		m_flashgbxSaveUploadActionsBlocked = false;
+		updateFlashGBXRestrictedActions();
+		return;
+	}
+
+	m_flashgbxSaveUploadActionsBlocked = true;
+	for (auto& action : m_flashgbxSaveUploadBlockedActions) {
+		if (!action) {
+			continue;
+		}
+		Action* rawAction = action.get();
+		if (!m_flashgbxSaveUploadActionStates.contains(rawAction)) {
+			m_flashgbxSaveUploadActionStates.insert(rawAction, rawAction->isEnabled());
+		}
+		rawAction->setEnabled(false);
+	}
+}
+
 void Window::openView(QWidget* widget) {
 	connect(this, &Window::shutdown, widget, &QWidget::close);
 	widget->setAttribute(Qt::WA_DeleteOnClose);
@@ -533,6 +2055,9 @@ void Window::loadCamImage() {
 }
 
 void Window::importSharkport() {
+	if (blockFlashGBXCartridgeRestrictedAction()) {
+		return;
+	}
 	QString filename = GBAApp::app()->getOpenFileName(this, tr("Select save"), tr("GameShark saves (*.gsv *.sps *.xps)"));
 	if (!filename.isEmpty()) {
 		m_controller->importSharkport(filename);
@@ -789,6 +2314,10 @@ void Window::hideEvent(QHideEvent* event) {
 }
 
 void Window::closeEvent(QCloseEvent* event) {
+	if (blockFlashGBXSaveUploadInProgress()) {
+		event->ignore();
+		return;
+	}
 	emit shutdown();
 	m_config->setQtOption("windowPos", pos(), m_playerId > 0 ? QString("player%0").arg(m_playerId) : QString());
 	m_config->setQtOption("maximized", isMaximized());
@@ -918,6 +2447,10 @@ void Window::gameStarted() {
 	reloadAudioDriver();
 	multiplayerChanged();
 	updateTitle();
+	updateFlashGBXRestrictedActions();
+	if (isFlashGBXCartridgeActive()) {
+		cleanupFlashGBXSessionTempFiles();
+	}
 
 	m_hitUnimplementedBiosCall = false;
 	if (m_config->getOption("showFps", "1").toInt()) {
@@ -977,6 +2510,16 @@ void Window::gameStarted() {
 }
 
 void Window::gameStopped() {
+	if (m_flashgbxSession) {
+		if (m_pendingClose && m_config->getQtOption(QStringLiteral("autoUpload"), QStringLiteral("flashgbx")).toBool()) {
+			m_flashgbxSaveUploadTimer.stop();
+			m_flashgbxCloseAfterUpload = uploadFlashGBXSave(false);
+		} else {
+			scheduleFlashGBXSaveUpload();
+		}
+		cleanupFlashGBXSessionTempFiles();
+	}
+
 	for (auto& action : m_platformActions) {
 		action->setEnabled(true);
 	}
@@ -1020,8 +2563,10 @@ void Window::gameStopped() {
 			m_scripting->setVideoBackend(nullptr);
 		}
 #endif
-		m_cleanupDisplay = std::move(m_display);
-		close();
+		if (!m_flashgbxCloseAfterUpload) {
+			m_cleanupDisplay = std::move(m_display);
+			close();
+		}
 	}
 	QTimer::singleShot(0, this, &Window::delayedCleanup);
 #ifndef Q_OS_MAC
@@ -1044,6 +2589,7 @@ void Window::gameCrashed(const QString& errorMessage) {
 }
 
 void Window::gameFailed() {
+	cleanupFlashGBXSessionTempFiles();
 	QMessageBox* fail = new QMessageBox(QMessageBox::Warning, tr("Couldn't Start"),
 	                                    tr("Could not start game."),
 	                                    QMessageBox::Ok, this, Qt::Sheet);
@@ -1256,15 +2802,19 @@ void Window::updateTitle(float fps) {
 		}
 	}
 	if (title.isNull()) {
-		setWindowTitle(tr("%1 - %2").arg(projectName).arg(projectVersion));
+		setWindowTitle(tr("%1%2 - %3").arg(projectName).arg(m_flashgbxSaveUploadBusy ? tr(" - Saving to Cartridge") : QString()).arg(projectVersion));
 	} else if (fps < 0) {
-		setWindowTitle(tr("%1 - %2 - %3").arg(projectName).arg(title).arg(projectVersion));
+		setWindowTitle(tr("%1 - %2%3 - %4").arg(projectName).arg(title).arg(m_flashgbxSaveUploadBusy ? tr(" - Saving to Cartridge") : QString()).arg(projectVersion));
 	} else {
-		setWindowTitle(tr("%1 - %2 (%3 fps) - %4").arg(projectName).arg(title).arg(fps).arg(projectVersion));
+		setWindowTitle(tr("%1 - %2 (%3 fps)%4 - %5").arg(projectName).arg(title).arg(fps).arg(m_flashgbxSaveUploadBusy ? tr(" - Saving to Cartridge") : QString()).arg(projectVersion));
 	}
+	updateFlashGBXRestrictedActions();
 }
 
 void Window::openStateWindow(LoadSave ls) {
+	if (blockFlashGBXCartridgeRestrictedAction()) {
+		return;
+	}
 	if (m_stateWindow) {
 		return;
 	}
@@ -1326,28 +2876,36 @@ void Window::setupMenu(QMenuBar* menubar) {
 	menubar->clear();
 	m_actions.addMenu(tr("&File"), "file");
 
-	m_actions.addAction(tr("Load &ROM..."), "loadROM", this, &Window::selectROM, "file", QKeySequence::Open);
+	blockFlashGBXSaveUploadAction(m_actions.addAction(tr("Load &ROM..."), "loadROM", this, &Window::selectROM, "file", QKeySequence::Open));
+	blockFlashGBXSaveUploadAction(m_actions.addAction(tr("Load from Cartridge..."), "loadFlashGBXCartridge", this, &Window::selectFlashGBXCartridge, "file"));
 
 #ifdef USE_SQLITE3
-	m_actions.addAction(tr("Load ROM in archive..."), "loadROMInArchive", this, &Window::selectROMInArchive, "file");
+	blockFlashGBXSaveUploadAction(m_actions.addAction(tr("Load ROM in archive..."), "loadROMInArchive", this, &Window::selectROMInArchive, "file"));
 	m_actions.addAction(tr("Add folder to library..."), "addDirToLibrary", this, &Window::addDirToLibrary, "file");
 #endif
 
 	m_actions.addMenu(tr("Save games"), "saves", "file");
-	addGameAction(tr("Load alternate save game..."), "loadAlternateSave", [this]() {
+	auto loadAlternateSave = addGameAction(tr("Load alternate save game..."), "loadAlternateSave", [this]() {
 		this->selectSave(false);
 	}, "saves");
-	addGameAction(tr("Load temporary save game..."), "loadTemporarySave", [this]() {
+	restrictFlashGBXAction(loadAlternateSave);
+	auto loadTemporarySave = addGameAction(tr("Load temporary save game..."), "loadTemporarySave", [this]() {
 		this->selectSave(true);
 	}, "saves");
+	restrictFlashGBXAction(loadTemporarySave);
 
 	m_actions.addSeparator("saves");
 
 	m_actions.addAction(tr("Convert save game..."), "convertSave", openTView<SaveConverter>(), "saves");
+	auto uploadFlashGBXSaveAction = addGameAction(tr("Upload Save to Cartridge Now"), "uploadFlashGBXSave", [this]() {
+		this->uploadFlashGBXSave(true);
+	}, "saves");
+	m_nonMpActions.append(uploadFlashGBXSaveAction);
 
 #ifdef M_CORE_GBA
 	auto importShark = addGameAction(tr("Import GameShark Save..."), "importShark", this, &Window::importSharkport, "saves");
 	m_platformActions.insert(mPLATFORM_GBA, importShark);
+	restrictFlashGBXAction(importShark);
 
 	auto exportShark = addGameAction(tr("Export GameShark Save..."), "exportShark", this, &Window::exportSharkport, "saves");
 	m_platformActions.insert(mPLATFORM_GBA, exportShark);
@@ -1358,10 +2916,12 @@ void Window::setupMenu(QMenuBar* menubar) {
 	ConfigOption* savePlayer = m_config->addOption("savePlayerId");
 	savePlayerAction = savePlayer->addValue(tr("Automatically determine"), 0, &m_actions, "saves");
 	m_nonMpActions.append(savePlayerAction);
+	restrictFlashGBXAction(savePlayerAction);
 
 	for (int i = 1; i < 5; ++i) {
 		savePlayerAction = savePlayer->addValue(tr("Use player %0 save game").arg(i), i, &m_actions, "saves");
 		m_nonMpActions.append(savePlayerAction);
+		restrictFlashGBXAction(savePlayerAction);
 	}
 	savePlayer->connect([this](const QVariant& value) {
 		if (m_controller) {
@@ -1370,10 +2930,11 @@ void Window::setupMenu(QMenuBar* menubar) {
 	}, this);
 	m_config->updateOption("savePlayerId");
 
-	m_actions.addAction(tr("Load &patch..."), "loadPatch", this, &Window::selectPatch, "file");
+	auto loadPatch = m_actions.addAction(tr("Load &patch..."), "loadPatch", this, &Window::selectPatch, "file");
+	restrictFlashGBXAction(loadPatch);
 
 #ifdef M_CORE_GBA
-	m_actions.addAction(tr("Boot BIOS"), "bootBIOS", this, &Window::bootBIOS, "file");
+	blockFlashGBXSaveUploadAction(m_actions.addAction(tr("Boot BIOS"), "bootBIOS", this, &Window::bootBIOS, "file"));
 #endif
 
 #ifdef M_CORE_GBA
@@ -1390,27 +2951,31 @@ void Window::setupMenu(QMenuBar* menubar) {
 		this->openStateWindow(LoadSave::LOAD);
 	}, "file", QKeySequence("F10"));
 	m_nonMpActions.append(loadState);
+	restrictFlashGBXAction(loadState);
 
 	auto loadStateFile = addGameAction(tr("Load state file..."), "loadStateFile", [this]() {
 		this->selectState(true);
 	}, "file");
 	m_nonMpActions.append(loadStateFile);
+	restrictFlashGBXAction(loadStateFile);
 
 	auto saveState = addGameAction(tr("&Save state"), "saveState", [this]() {
 		this->openStateWindow(LoadSave::SAVE);
 	}, "file", QKeySequence("Shift+F10"));
 	m_nonMpActions.append(saveState);
+	restrictFlashGBXAction(saveState);
 
 	auto saveStateFile = addGameAction(tr("Save state file..."), "saveStateFile", [this]() {
 		this->selectState(false);
 	}, "file");
 	m_nonMpActions.append(saveStateFile);
+	restrictFlashGBXAction(saveStateFile);
 
 	m_actions.addMenu(tr("Quick load"), "quickLoad", "file");
 	m_actions.addMenu(tr("Quick save"), "quickSave", "file");
 
 	auto quickLoad = addGameAction(tr("Load recent"), "quickLoad", [this] {
-		m_controller->loadState();
+		loadFlashGBXSafeState();
 	}, "quickLoad");
 	m_nonMpActions.append(quickLoad);
 
@@ -1424,16 +2989,18 @@ void Window::setupMenu(QMenuBar* menubar) {
 
 	auto undoLoadState = addGameAction(tr("Undo load state"), "undoLoadState", &CoreController::loadBackupState, "quickLoad", QKeySequence("F11"));
 	m_nonMpActions.append(undoLoadState);
+	restrictFlashGBXAction(undoLoadState);
 
 	auto undoSaveState = addGameAction(tr("Undo save state"), "undoSaveState", &CoreController::saveBackupState, "quickSave", QKeySequence("Shift+F11"));
 	m_nonMpActions.append(undoSaveState);
+	restrictFlashGBXAction(undoSaveState);
 
 	m_actions.addSeparator("quickLoad");
 	m_actions.addSeparator("quickSave");
 
 	for (int i = 1; i < 10; ++i) {
 		auto quickLoad = addGameAction(tr("State &%1").arg(i),  QString("quickLoad.%1").arg(i), [this, i]() {
-			m_controller->loadState(i);
+			loadFlashGBXSafeState(i);
 		}, "quickLoad", QString("F%1").arg(i));
 		m_nonMpActions.append(quickLoad);
 
@@ -1460,15 +3027,31 @@ void Window::setupMenu(QMenuBar* menubar) {
 #endif
 
 	m_actions.addAction(tr("About..."), "about", openTView<AboutScreen>(), "file")->setRole(Action::Role::ABOUT);
-	m_actions.addAction(tr("E&xit"), "quit", &QApplication::quit, "file", QKeySequence::Quit)->setRole(Action::Role::QUIT);
+	auto quit = m_actions.addAction(tr("E&xit"), "quit", [this]() {
+		if (!blockFlashGBXSaveUploadInProgress()) {
+			QApplication::quit();
+		}
+	}, "file", QKeySequence::Quit);
+	quit->setRole(Action::Role::QUIT);
+	blockFlashGBXSaveUploadAction(quit);
 
 	m_actions.addMenu(tr("&Emulation"), "emu");
-	addGameAction(tr("&Reset"), "reset", &CoreController::reset, "emu", QKeySequence("Ctrl+R"));
-	addGameAction(tr("Sh&utdown"), "shutdown", &CoreController::stop, "emu");
+	blockFlashGBXSaveUploadAction(addGameAction(tr("&Reset"), "reset", [this]() {
+		if (!blockFlashGBXSaveUploadInProgress()) {
+			m_controller->reset();
+		}
+	}, "emu", QKeySequence("Ctrl+R")));
+	blockFlashGBXSaveUploadAction(addGameAction(tr("Sh&utdown"), "shutdown", [this]() {
+		if (!blockFlashGBXSaveUploadInProgress()) {
+			m_controller->stop();
+		}
+	}, "emu"));
 	m_actions.addSeparator("emu");
 
-	addGameAction(tr("Replace ROM..."), "replaceROM", this, &Window::replaceROM, "emu");
-	addGameAction(tr("Yank game pak"), "yank", &CoreController::yankPak, "emu");
+	auto replaceROM = addGameAction(tr("Replace ROM..."), "replaceROM", this, &Window::replaceROM, "emu");
+	restrictFlashGBXAction(replaceROM);
+	auto yank = addGameAction(tr("Yank game pak"), "yank", &CoreController::yankPak, "emu");
+	restrictFlashGBXAction(yank);
 	m_actions.addSeparator("emu");
 
 	auto pause = m_actions.addBooleanAction(tr("&Pause"), "pause", [this](bool paused) {
@@ -1532,16 +3115,19 @@ void Window::setupMenu(QMenuBar* menubar) {
 		}
 	}, "emu", QKeySequence("`"));
 	m_nonMpActions.append(rewindHeld);
+	restrictFlashGBXAction(rewindHeld);
 
 	auto rewind = addGameAction(tr("Re&wind"), "rewind", [this]() {
 		m_controller->rewind();
 	}, "emu", QKeySequence("~"));
 	m_nonMpActions.append(rewind);
+	restrictFlashGBXAction(rewind);
 
 	auto frameRewind = addGameAction(tr("Step backwards"), "frameRewind", [this] () {
 		m_controller->rewind(1);
 	}, "emu", QKeySequence("Ctrl+B"));
 	m_nonMpActions.append(frameRewind);
+	restrictFlashGBXAction(frameRewind);
 
 	m_actions.addSeparator("emu");
 
@@ -2194,6 +3780,12 @@ void Window::setController(CoreController* controller) {
 		return;
 	}
 
+	if (m_flashgbxUseSoftwareDisplay) {
+		m_flashgbxUseSoftwareDisplay = false;
+		Display::setDriver(Display::Driver::QT);
+		reloadDisplayDriver();
+	}
+
 	QString baseDirectory = controller->baseDirectory();
 	QString path = controller->path();
 	if (!path.isEmpty()) {
@@ -2251,6 +3843,13 @@ void Window::setController(CoreController* controller) {
 	});
 	connect(m_controller.get(), &CoreController::unpaused, GBAApp::app(), &GBAApp::suspendScreensaver);
 	connect(m_controller.get(), &CoreController::frameAvailable, this, &Window::recordFrame);
+	connect(m_controller.get(), &CoreController::savedataUpdated, this, [this]() {
+		if (!isFlashGBXCartridgeActive()) {
+			return;
+		}
+		configureFlashGBXSaveWatcher();
+		scheduleFlashGBXSaveUpload();
+	});
 	connect(m_controller.get(), &CoreController::crashed, this, &Window::gameCrashed);
 	connect(m_controller.get(), &CoreController::failed, this, &Window::gameFailed);
 	connect(m_controller.get(), &CoreController::unimplementedBiosCall, this, &Window::unimplementedBiosCall);

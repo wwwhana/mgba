@@ -84,6 +84,7 @@ public:
 	mCoreThread* thread() { return &m_threadContext; }
 
 	void setPath(const QString& path, const QString& base = {});
+	void setSavePath(const QString& path);
 	QString path() const { return m_path; }
 	QString baseDirectory() const { return m_baseDirectory; }
 	QString savePath() const { return m_savePath; }
@@ -161,6 +162,7 @@ public slots:
 	void overrideMute(bool);
 
 	void loadState(int slot = 0);
+	void loadState(int slot, int flags);
 	void loadState(const QString& path, int flags = -1);
 	void loadState(QIODevice* iodev, int flags = -1);
 	void saveState(int slot = 0);
@@ -229,6 +231,7 @@ signals:
 	void crashed(const QString& errorMessage);
 	void failed();
 	void frameAvailable();
+	void savedataUpdated();
 	void didReset();
 	void stateLoaded();
 	void rewound();
