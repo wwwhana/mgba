@@ -43,12 +43,14 @@ jobs:
           sudo apt-get install -y \
             build-essential \
             cmake \
+            libepoxy-dev \
             libgl1-mesa-dev \
             libqt6opengl6-dev \
             ninja-build \
             pkg-config \
             qt6-base-dev \
-            qt6-multimedia-dev
+            qt6-multimedia-dev \
+            qt6-tools-dev
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} ${COMMON_CMAKE_FLAGS}
       - name: Build
@@ -124,9 +126,11 @@ jobs:
             git
             mingw-w64-ucrt-x86_64-cmake
             mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-libepoxy
             mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-qt6-base
             mingw-w64-ucrt-x86_64-qt6-multimedia
+            mingw-w64-ucrt-x86_64-qt6-tools
       - name: Configure
         run: |
           FLASHGBX_PYTHON="$(cygpath -m "$pythonLocation/python.exe")"

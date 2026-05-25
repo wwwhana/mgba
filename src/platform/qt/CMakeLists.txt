@@ -587,14 +587,14 @@ if(UNIX AND NOT APPLE)
 	find_program(GIT git)
 	if(GIT AND NOT SKIP_GIT)
 		execute_process(COMMAND ${GIT} tag -l --sort=-version:refname "--format=%(refname:strip=2) %(creatordate:short)" WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" OUTPUT_VARIABLE RELEASE_TAGS OUTPUT_STRIP_TRAILING_WHITESPACE)
-		string(REPLACE "\n" ";" TAGS_LIST ${RELEASE_TAGS})
+		string(REPLACE "\n" ";" TAGS_LIST "${RELEASE_TAGS}")
 		foreach(TAG ${TAGS_LIST})
-			string(REPLACE " " ";" TAG_LIST ${TAG})
+			string(REPLACE " " ";" TAG_LIST "${TAG}")
 			list(GET TAG_LIST 0 TAG_REF)
 			list(GET TAG_LIST 1 TAG_DATE)
 
 			# Check dash usually signifies an alpha or a beta tag
-			string(FIND ${TAG_REF} "-" TAG_UNSTABLE)
+			string(FIND "${TAG_REF}" "-" TAG_UNSTABLE)
 
 			if (NOT ${TAG_UNSTABLE} EQUAL -1)
 				continue()
