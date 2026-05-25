@@ -164,10 +164,17 @@ jobs:
         with:
           path: release-artifacts
           merge-multiple: true
+      - name: Prepare rolling release metadata
+        id: rolling-release
+        if: github.ref == 'refs/heads/master'
+        run: |
+          nightly_tag="$(TZ=Asia/Seoul date +nightly-%Y%m%d-%H%M%S)-${GITHUB_RUN_NUMBER}"
+          echo "nightly_tag=${nightly_tag}" >> "${GITHUB_OUTPUT}"
       - name: Publish rolling release
         if: github.ref == 'refs/heads/master'
         env:
           GH_TOKEN: ${{ github.token }}
+          NIGHTLY_TAG: ${{ steps.rolling-release.outputs.nightly_tag }}
         run: |
           gh release delete cartridge-latest --repo "${GITHUB_REPOSITORY}" --yes --cleanup-tag || true
           gh release create cartridge-latest release-artifacts/* \
@@ -175,6 +182,12 @@ jobs:
             --target "${GITHUB_SHA}" \
             --title "Latest cartridge build" \
             --notes "Automated cartridge build from ${GITHUB_SHA}." \
+            --prerelease
+          gh release create "${NIGHTLY_TAG}" release-artifacts/* \
+            --repo "${GITHUB_REPOSITORY}" \
+            --target "${GITHUB_SHA}" \
+            --title "${NIGHTLY_TAG}" \
+            --notes "Automated nightly cartridge build from ${GITHUB_SHA}." \
             --prerelease
       - uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
