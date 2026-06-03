@@ -637,13 +637,15 @@ if(APPLE)
 			get_filename_component(QT_LIBRARY_DIR "${QT_CORE_LOCATION}" DIRECTORY)
 		endif()
 		set(FIXUP_DIRS "${QT_LIBRARY_DIR}" "/opt/homebrew/lib" "/usr/local/lib")
-		target_sources(${BINARY_NAME}-qt PRIVATE "${PLUGINS}")
+		set(BUNDLE_PLUGINS "${QTCOCOA}")
 
-		set_source_files_properties("${QTCOCOA}" PROPERTIES MACOSX_PACKAGE_LOCATION Contents/PlugIns)
+		set_source_files_properties("${QTCOCOA}" PROPERTIES MACOSX_PACKAGE_LOCATION Contents/PlugIns/platforms)
 		if(${QT_V} LESS 6)
+			list(APPEND BUNDLE_PLUGINS "${COREAUDIO}" "${QTAVFSERVICE}")
 			set_source_files_properties("${COREAUDIO}" PROPERTIES MACOSX_PACKAGE_LOCATION Contents/PlugIns)
 			set_source_files_properties("${QTAVFSERVICE}" PROPERTIES MACOSX_PACKAGE_LOCATION Contents/PlugIns)
 		endif()
+		target_sources(${BINARY_NAME}-qt PRIVATE ${BUNDLE_PLUGINS})
 
 		install(CODE "
 		   include(BundleUtilities)
