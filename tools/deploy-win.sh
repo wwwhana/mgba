@@ -3,8 +3,19 @@ BINARY=$1
 INSTALLPATH="$2"
 WORKDIR="$3"
 
+is_absolute_path() {
+	case "$1" in
+		[A-Za-z]:*|/*) return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
 if [ -z "$DESTDIR" ]; then
-	OUTDIR="$INSTALLPATH"
+	if is_absolute_path "$INSTALLPATH"; then
+		OUTDIR="$INSTALLPATH"
+	else
+		OUTDIR="$WORKDIR/$INSTALLPATH"
+	fi
 else
 	if echo "$INSTALLPATH" | grep "^[A-Z]:" >/dev/null 2>&1; then
 		INSTALLPATH="${INSTALLPATH:3}"
