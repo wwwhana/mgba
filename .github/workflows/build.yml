@@ -94,12 +94,19 @@ jobs:
             ${COMMON_CMAKE_FLAGS}
       - name: Build
         run: cmake --build build --target mgba-qt --parallel
-      - name: Stage artifact
+      - name: Install artifact
+        run: cmake --install build --prefix package
+      - name: Validate artifact
         run: |
-          mkdir -p package
-          cp -R build/qt/mGBA.app package/
+          test -d package/Applications/mGBA.app
+          test -f package/Applications/mGBA.app/Contents/MacOS/mGBA
+          test -f package/Applications/mGBA.app/Contents/Frameworks/libmgba.0.11.dylib
+          otool -L package/Applications/mGBA.app/Contents/MacOS/mGBA
+          otool -L package/Applications/mGBA.app/Contents/MacOS/mGBA | grep '@executable_path/../Frameworks/libmgba.0.11.dylib'
+          test -d package/Applications/mGBA.app/Contents/Frameworks/QtCore.framework
+          test -f package/Applications/mGBA.app/Contents/PlugIns/platforms/libqcocoa.dylib
       - name: Pack artifact
-        run: ditto -c -k --keepParent package/mGBA.app "${{ matrix.artifact }}"
+        run: ditto -c -k --keepParent package/Applications/mGBA.app "${{ matrix.artifact }}"
       - uses: actions/upload-artifact@v4
         with:
           name: mGBA-macos-${{ matrix.arch }}
@@ -142,6 +149,13 @@ jobs:
         run: cmake --build build --target mgba-qt --parallel
       - name: Install artifact
         run: cmake --install build --prefix package
+      - name: Validate artifact
+        run: |
+          test -f package/bin/mGBA.exe
+          test -f package/bin/mgba.dll || test -f package/bin/libmgba.dll
+          test -f package/bin/Qt6Core.dll
+          test -f package/bin/Qt6Gui.dll
+          test -f package/bin/Qt6Widgets.dll
       - name: Pack artifact
         run: cmake -E tar cf mGBA-windows.zip --format=zip -- package
       - uses: actions/upload-artifact@v4
