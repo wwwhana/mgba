@@ -31,5 +31,5 @@ for MGBA_DLL in "$(dirname "$BINARY")/mgba.dll" "$(dirname "$BINARY")/libmgba.dl
 	fi
 done
 if which windeployqt 2>&1 | grep /windeployqt >/dev/null 2>&1; then
-	windeployqt --no-opengl-sw --no-svg --release --dir "$OUTDIR" "$BINARY"
+	windeployqt --no-opengl-sw --release --dir "$OUTDIR" "$BINARY"
 fi
